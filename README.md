@@ -20,8 +20,9 @@ The public core and local data have separate responsibilities:
   locally customized promotion assets, and other generated state.
 - Credential references, connection profiles, policy, and notification delivery
   are local deployment concerns. They are not repository configuration.
-- An installed core has no implicit access to local data. It needs an explicit
-  runtime location through a command-line path or a local runtime manifest.
+- Stable deployments select local data explicitly through a command-line path
+  or local runtime manifest. The CLI retains a generic XDG default for local
+  bootstrap; the MCP service requires an explicit attachment.
 
 See [Configuration](docs/CONFIGURATION.md) for the runtime manifest contract and
 [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) for component boundaries.
@@ -47,8 +48,8 @@ mypy src
 Choose a local runtime directory explicitly:
 
 ```bash
-email-memory-store --root "$HOME/.local/state/email-memory-store" init-db
-email-memory-store --root "$HOME/.local/state/email-memory-store" status
+email-memory-store --root /path/to/runtime-root init-db
+email-memory-store --root /path/to/runtime-root status
 ```
 
 The runtime is created on first initialization. It is local state, not source
@@ -69,12 +70,27 @@ explicit overwrite confirmation is selected.
 Run the core against the generated runtime manifest:
 
 ```bash
-email-memory-store --runtime-config "$HOME/.config/email-memory-store/runtime.toml" init-db
-email-memory-store --runtime-config "$HOME/.config/email-memory-store/runtime.toml" status
+email-memory-store --runtime-config /path/to/runtime.toml init-db
+email-memory-store --runtime-config /path/to/runtime.toml status
 ```
 
 The bundle schema, regeneration behavior, and runtime precedence rules are in
 [Configuration](docs/CONFIGURATION.md).
+
+## MCP Startup
+
+The `email-memory-store-mcp` launcher uses the same runtime attachment contract
+as the CLI. Pass either an explicit root or a runtime manifest at startup:
+
+```bash
+email-memory-store-mcp --root /path/to/runtime-root
+email-memory-store-mcp --runtime-config /path/to/runtime.toml
+```
+
+The launcher resolves the attachment once before stdio opens. If the runtime
+attachment is missing or invalid, or `<runtime_root>/chroma` is not an existing
+initialized store with indexed data, startup fails without creating a
+replacement index. The same configured retrieval engine serves both MCP tools.
 
 ## Capabilities
 
