@@ -1,0 +1,212 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import stat
+import tomllib
+
+import pytest
+
+import email_memory_store.tui.private_setup as private_setup
+from email_memory_store.tui.private_setup import (
+    PrivateSetupApp,
+    PrivateSetupValues,
+    load_private_setup,
+    parse_folders,
+    private_setup_paths,
+    validate_private_setup,
+    write_private_setup,
+)
+from textual.widgets import Input
+
+
+def _values(**changes: str) -> PrivateSetupValues:
+    values = {
+        "runtime_root": "/var/lib/email-memory",
+        "work_root": "/var/tmp/email-memory-work",
+        "fact_store_db": "/var/lib/facts/facts.db",
+        "fact_store_module_root": "/opt/local-facts",
+        "fact_store_provider": "local-fact-provider",
+        "runtime_provider": "local-provider",
+        "account_label": "primary",
+        "account_email": "person@example.test",
+        "include_folders": "Inbox, Archive/Projects",
+        "exclude_folders": "Junk",
+        "alert_destination": "local-alert-reference",
+        "credential_reference": "keyring:mailbox",
+    }
+    values.update(changes)
+    return PrivateSetupValues(**values)
+
+
+def _is_owner_only(path: Path) -> bool:
+    return not (stat.S_IMODE(path.stat().st_mode) & (stat.S_IRWXG | stat.S_IRWXO))
+
+
+def test_private_setup_paths_use_xdg_config_home():
+    paths = private_setup_paths(environ={"XDG_CONFIG_HOME": "/tmp/config"})
+
+    assert paths.config_dir == Path("/tmp/config/email-memory-store")
+    assert paths.runtime_manifest.name == "runtime.toml"
+    assert paths.private_env.name == "private.env.json"
+    assert paths.policy.name == "policy.json"
+
+
+def test_write_private_setup_creates_separate_owner_only_artifacts(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+
+    assert all(_is_owner_only(path) for path in (paths.config_dir, *paths.artifacts))
+    assert tomllib.loads(paths.runtime_manifest.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "runtime_root": "/var/lib/email-memory",
+        "work_root": "/var/tmp/email-memory-work",
+        "fact_store_db": "/var/lib/facts/facts.db",
+        "runtime_provider": {"name": "local-provider"},
+    }
+    assert json.loads(paths.private_env.read_text(encoding="utf-8")) == {
+        "alert_destination": "local-alert-reference",
+        "credential_reference": "keyring:mailbox",
+        "fact_store_module_root": "/opt/local-facts",
+        "fact_store_provider": "local-fact-provider",
+        "schema_version": 1,
+    }
+    assert json.loads(paths.policy.read_text(encoding="utf-8")) == {
+        "account_email": "person@example.test",
+        "account_label": "primary",
+        "exclude_folders": ["Junk"],
+        "include_folders": ["Inbox", "Archive/Projects"],
+        "schema_version": 1,
+    }
+    assert load_private_setup(config_home=tmp_path).policy["account_label"] == "primary"
+
+
+def test_write_private_setup_requires_explicit_overwrite(tmp_path):
+    write_private_setup(_values(), config_home=tmp_path)
+
+    with pytest.raises(FileExistsError, match="explicit overwrite"):
+        write_private_setup(_values(account_label="replacement"), config_home=tmp_path)
+
+    paths = write_private_setup(
+        _values(account_label="replacement"), config_home=tmp_path, overwrite=True
+    )
+    assert json.loads(paths.policy.read_text(encoding="utf-8"))["account_label"] == "replacement"
+
+
+def test_write_private_setup_supports_validated_local_retention_policy(tmp_path):
+    paths = write_private_setup(
+        _values(
+            retention_inbox_folder="Inbox",
+            retention_department_folder="Departments",
+            retention_service_folder="Services",
+            retention_archive_folder="Archive",
+            retention_sender_archive_rules=(
+                '[{"folder":"Archive/Newsletters","emails":["sender@example.test"]}]'
+            ),
+            retention_classification_definitions='{"newsletter":"Recurring update"}',
+        ),
+        config_home=tmp_path,
+    )
+
+    retention = json.loads(paths.policy.read_text(encoding="utf-8"))["retention"]
+    assert retention == {
+        "inbox_folder": "Inbox",
+        "department_folder": "Departments",
+        "service_folder": "Services",
+        "archive_folder": "Archive",
+        "sender_archive_rules": [
+            {"folder": "Archive/Newsletters", "emails": ["sender@example.test"]}
+        ],
+        "classification_definitions": {"newsletter": "Recurring update"},
+    }
+    assert load_private_setup(config_home=tmp_path).policy["retention"] == retention
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        (_values(runtime_root="relative-root"), "absolute local path"),
+        (_values(account_label=""), "account label is required"),
+        (_values(account_email="not-an-email"), "valid email address"),
+        (_values(retention_sender_archive_rules="not JSON"), "valid JSON"),
+        (
+            _values(retention_sender_archive_rules='[{"folder":"Archive","unexpected":true}]'),
+            "only folder and emails",
+        ),
+        (
+            _values(retention_classification_definitions='{"kind": 1}'),
+            "string-to-string mapping",
+        ),
+    ],
+)
+def test_private_setup_validates_required_and_portable_values(values, message):
+    with pytest.raises(ValueError, match=message):
+        validate_private_setup(values)
+
+
+def test_parse_folders_discards_empty_values():
+    assert parse_folders(" Inbox, , Archive/Projects ") == ["Inbox", "Archive/Projects"]
+
+
+def test_main_launches_private_setup(monkeypatch):
+    launched = False
+
+    def launch() -> None:
+        nonlocal launched
+        launched = True
+
+    monkeypatch.setattr(private_setup, "launch_private_setup", launch)
+    private_setup.main()
+
+    assert launched
+
+
+def test_load_private_setup_rejects_unsupported_version_and_weak_permissions(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+    paths.policy.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "account_label": "primary",
+                "account_email": "person@example.test",
+                "include_folders": [],
+                "exclude_folders": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths.policy.chmod(0o600)
+    with pytest.raises(ValueError, match="schema_version"):
+        load_private_setup(config_home=tmp_path)
+
+    write_private_setup(_values(), config_home=tmp_path, overwrite=True)
+    paths.private_env.chmod(0o644)
+    with pytest.raises(PermissionError, match="accessible by group or other"):
+        load_private_setup(config_home=tmp_path)
+
+
+def test_load_private_setup_rejects_unknown_retention_keys(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+    paths.policy.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "account_label": "primary",
+                "account_email": "person@example.test",
+                "include_folders": [],
+                "exclude_folders": [],
+                "retention": {"unsupported": "value"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths.policy.chmod(0o600)
+
+    with pytest.raises(ValueError, match="unsupported key"):
+        load_private_setup(config_home=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_private_setup_app_starts(tmp_path):
+    app = PrivateSetupApp(config_home=tmp_path)
+    async with app.run_test():
+        assert app.query_one("#runtime-root", Input) is not None

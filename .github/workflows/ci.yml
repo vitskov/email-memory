@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install static-analysis tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install mypy ruff
+
+      - name: Run lint and typecheck gates
+        env:
+          PYTHON_BIN: python
+          RUN_COMPILEALL: "0"
+          RUN_DEPENDENCY_CHECK: "0"
+          RUN_RUFF: "1"
+          RUN_MYPY: "1"
+          RUN_PYTEST: "0"
+          REQUIRE_RUFF: "1"
+          REQUIRE_MYPY: "1"
+          RUFF_TARGETS: "src scripts"
+          RUFF_EXTRA_ARGS: "--select E9,F"
+          MYPY_TARGETS: "src"
+          MYPYPATH: src
+        run: ./scripts/check_quality.sh
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -e ".[test]"
+
+      - name: Run syntax, dependency, and test gates
+        env:
+          PYTHON_BIN: python
+          STRICT_DEPENDENCY_CHECK: "1"
+          RUN_RUFF: "0"
+          RUN_MYPY: "0"
+        run: ./scripts/check_quality.sh

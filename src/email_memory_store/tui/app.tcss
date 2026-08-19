@@ -1,0 +1,37 @@
+#search-input {
+    dock: top;
+    height: 3;
+    border: tall $primary-darken-2;
+}
+
+#search-input:focus {
+    border: tall $primary;
+}
+
+FactTable {
+    height: 1fr;
+}
+
+DetailScreen {
+    align: center middle;
+}
+
+#detail-scroll {
+    width: 90%;
+    height: 80%;
+    border: round $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+ThreadSummaryScreen {
+    align: center middle;
+}
+
+#thread-scroll {
+    width: 90%;
+    height: 80%;
+    border: round $accent;
+    background: $surface;
+    padding: 1 2;
+}

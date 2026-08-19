@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "email-memory-store"
+version = "0.1.0"
+description = "Configurable local email memory store"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.1.0",
+  "textual>=7.5.0",
+  "chromadb>=0.5.0",
+  "sentence-transformers>=3.0.0",
+  "dateparser>=1.2.0",
+  "mcp>=1.0.0",
+]
+
+[project.optional-dependencies]
+quality = [
+  "ruff>=0.6.0",
+  "mypy>=1.11",
+]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6.0",
+  "mypy>=1.11",
+]
+
+[project.scripts]
+email-memory-store = "email_memory_store.cli:main"
+email-memory-store-mcp = "email_memory_store.retrieval.mcp_server:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+email_memory_store = [
+  "promotion/**/*.md",
+  "promotion/**/*.txt",
+  "promotion/**/*.json",
+  "tui/*.tcss",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+ignore_missing_imports = true
+mypy_path = ["typings"]
+warn_unused_ignores = true
+warn_redundant_casts = true
