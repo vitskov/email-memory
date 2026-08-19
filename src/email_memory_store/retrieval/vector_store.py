@@ -71,6 +71,25 @@ class VectorStore:
     def count(self, collection_name: str) -> int:
         return self.collection(collection_name).count()
 
+    def existing_collection_counts(self) -> dict[str, int]:
+        """Return counts without creating any missing application collections."""
+        counts: dict[str, int] = {}
+        for listed_collection in self._client.list_collections():
+            name = (
+                listed_collection
+                if isinstance(listed_collection, str)
+                else listed_collection.name
+            )
+            if name not in COLLECTION_NAMES:
+                continue
+            collection = (
+                self._client.get_collection(name)
+                if isinstance(listed_collection, str)
+                else listed_collection
+            )
+            counts[name] = collection.count()
+        return counts
+
     def query(
         self,
         collection_name: str,

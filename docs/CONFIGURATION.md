@@ -38,8 +38,8 @@ deployment data.
 
 ## Runtime Manifest
 
-`runtime.toml` is the only bundle file consumed directly by the public CLI. Its
-supported schema is:
+`runtime.toml` is the only bundle file consumed directly by the public CLI and
+the MCP launcher. Its supported schema is:
 
 ```toml
 schema_version = 1
@@ -56,6 +56,10 @@ name = "optional-installed-local-provider"
 optional. The setup interface requires absolute paths for every location it
 writes. The provider name is an explicit reference to a locally installed
 provider; providers are never discovered automatically.
+
+The launcher that starts the CLI or MCP server owns the manifest path. The
+public process resolves the selected attachment once at startup instead of
+discovering runtime locations from inside the stdio session.
 
 Do not add credentials, identity details, source-selection data, notification
 targets, or arbitrary extra keys to `runtime.toml`.
@@ -146,13 +150,13 @@ real identities, or a public release archive.
 Select the generated runtime manifest explicitly:
 
 ```bash
-email-memory-store --runtime-config "$HOME/.config/email-memory-store/runtime.toml" status
+email-memory-store --runtime-config /path/to/runtime.toml status
 ```
 
 Or set its path in a local launcher:
 
 ```bash
-export EMAIL_MEMORY_STORE_RUNTIME_CONFIG="$HOME/.config/email-memory-store/runtime.toml"
+export EMAIL_MEMORY_STORE_RUNTIME_CONFIG=/path/to/runtime.toml
 email-memory-store status
 ```
 
@@ -162,12 +166,18 @@ Each setting resolves in this order:
    `--fact-store-db`.
 2. The matching field in the selected `runtime.toml`.
 3. The matching field returned by the explicitly named local runtime provider.
-4. For `runtime_root` only, `$XDG_STATE_HOME/email-memory-store`, or
-   `$HOME/.local/state/email-memory-store` when `XDG_STATE_HOME` is unset.
+4. For `runtime_root` only, the generic XDG state default.
 
 The manifest selection itself resolves `--runtime-config` before
 `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`. There is no default for `work_root` or
 `fact_store_db`.
+
+The MCP launcher uses the same field precedence at process start but does not
+use the CLI's XDG runtime fallback. It requires `--root`, `--runtime-config`, or
+`EMAIL_MEMORY_STORE_RUNTIME_CONFIG`. It fails before stdio opens if the
+attachment is missing or invalid, or if `<runtime_root>/chroma` is not an
+existing initialized store with indexed application data. MCP never creates a
+replacement index at startup.
 
 ## Regeneration
 

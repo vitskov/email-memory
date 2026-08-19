@@ -36,6 +36,7 @@ The local runtime is selected explicitly at process start. It contains:
 - raw message artifacts, cache files, reports, and vector indexes
 - locally seeded or customized promotion assets
 - optional transient working database location
+- the vector store at `<runtime_root>/chroma`
 
 Separate local deployment configuration manages connector credentials, connection
 profiles, scheduling, notifications, and any external fact-store integration.
@@ -44,16 +45,25 @@ read from the checkout by default.
 
 ### Runtime resolution
 
-All CLI commands resolve their state through the same precedence order:
+The CLI resolves runtime fields once at process startup through this precedence
+order:
 
-1. `--root` and `--work-root` command-line options
+1. `--root`, `--work-root`, and `--fact-store-db` command-line options
 2. `--runtime-config <path>` local TOML manifest
 3. `EMAIL_MEMORY_STORE_RUNTIME_CONFIG` pointing to that manifest
-4. the generic XDG state default
+4. the generic XDG state default for `runtime_root`
 
-The manifest currently has only `runtime_root` and optional `work_root` fields.
-It is a location selector, not a credential store. See
-[Configuration](CONFIGURATION.md).
+The manifest can supply `runtime_root`, `work_root`, `fact_store_db`, and an
+optional `runtime_provider` table. It is a location selector, not a credential
+store. See [Configuration](CONFIGURATION.md).
+
+The MCP launcher uses the same resolver and field precedence after an
+attachment is selected, but it deliberately has no XDG fallback. It requires
+`--root`, `--runtime-config`, or `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`, validates
+the existing `<runtime_root>/chroma` store contains indexed application data,
+and constructs one retrieval engine before opening stdio. This makes a wrong
+deployment attachment a visible startup failure instead of an apparently
+healthy empty service.
 
 ## Persistent State
 
