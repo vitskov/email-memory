@@ -15,7 +15,7 @@ dependencies = [
   "sentence-transformers>=3.0.0",
   "torch>=2.9.0",
   "dateparser>=1.2.0",
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2",
 ]
 
 [project.urls]

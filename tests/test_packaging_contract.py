@@ -25,6 +25,7 @@ def test_lock_and_console_entry_points_are_committed_contracts() -> None:
         "email-memory-store": "email_memory_store.cli:main",
         "email-memory-store-mcp": "email_memory_store.retrieval.mcp_server:main",
     }
+    assert "mcp>=1.0.0,<2" in project["project"]["dependencies"]
 
 
 def test_bootstrap_exposes_accelerator_selection() -> None:
