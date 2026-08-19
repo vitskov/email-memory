@@ -27,7 +27,12 @@ fi
 
 if [[ "$RUN_DEPENDENCY_CHECK" == "1" ]]; then
   echo "==> Dependency gate"
-  if "$PYTHON_BIN" -m pip check; then
+  if command -v uv >/dev/null 2>&1; then
+    dependency_check=(uv pip check --python "$PYTHON_BIN")
+  else
+    dependency_check=("$PYTHON_BIN" -m pip check)
+  fi
+  if "${dependency_check[@]}"; then
     :
   elif [[ "$STRICT_DEPENDENCY_CHECK" == "1" ]]; then
     echo "Dependency gate failed under strict mode" >&2

@@ -29,19 +29,29 @@ See [Configuration](docs/CONFIGURATION.md) for the runtime manifest contract and
 
 ## Install
 
-Use a supported Python environment, then install the core from a checkout:
+The repository is a PEP 517/621 Python package. It requires `uv >= 0.12.5` and
+Python `>= 3.14`; `uv` installs the default Python 3.14 interpreter and exact
+dependencies from the committed lock:
 
 ```bash
-python -m pip install -e .
+git clone https://github.com/vitskov/email-memory.git
+cd email-memory
+./scripts/bootstrap.sh
 ```
+
+Bootstrap auto-detects CPU, NVIDIA CUDA, or Apple MPS PyTorch support. Use
+`--accelerator cpu|cuda|mps` to require a specific backend.
 
 For contributor verification:
 
 ```bash
-python -m pytest -q
-ruff check .
-mypy src
+./scripts/bootstrap.sh --dev
+./scripts/run_ci_locally.sh
 ```
+
+The runtime dependency list, isolated-environment layout, fresh-machine setup,
+upgrade procedure, and wheel build are documented in
+[Installation](docs/INSTALLATION.md).
 
 ## Quick Start
 

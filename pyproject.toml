@@ -7,15 +7,20 @@ name = "email-memory-store"
 version = "0.1.0"
 description = "Configurable local email memory store"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "duckdb>=1.1.0",
   "textual>=7.5.0",
   "chromadb>=0.5.0",
   "sentence-transformers>=3.0.0",
+  "torch>=2.9.0",
   "dateparser>=1.2.0",
   "mcp>=1.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/vitskov/email-memory"
+Issues = "https://github.com/vitskov/email-memory/issues"
 
 [project.optional-dependencies]
 quality = [
@@ -56,15 +61,31 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E9", "F"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 files = ["src"]
 ignore_missing_imports = true
 mypy_path = ["typings"]
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+[tool.uv]
+required-version = ">=0.12.5"
+package = true
+
+[tool.uv.sources]
+# The deployment lock selects CPU wheels. Published wheel metadata remains
+# standards-based and cannot encode an installer index.
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import threading
+from typing import cast
 
+from ..accelerator import resolve_public_runtime_device
 from sentence_transformers import SentenceTransformer
 
 DEFAULT_MODEL = "BAAI/bge-base-en-v1.5"
@@ -12,7 +14,10 @@ BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 class Embedder:
     def __init__(self, model_name: str = DEFAULT_MODEL, device: str | None = None) -> None:
-        self._model = SentenceTransformer(model_name, device=device)
+        self._model = SentenceTransformer(
+            model_name,
+            device=resolve_public_runtime_device(device),
+        )
 
     def embed_documents(self, texts: list[str], batch_size: int = 64) -> list[list[float]]:
         embeddings = self._model.encode(
@@ -34,7 +39,7 @@ class Embedder:
     @property
     def dim(self) -> int:
         getter = getattr(self._model, "get_embedding_dimension", None) or self._model.get_sentence_embedding_dimension
-        return getter()
+        return cast(int, getter())
 
 
 _DEFAULT_EMBEDDER: Embedder | None = None
