@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from importlib.abc import Traversable
 from importlib.resources import files
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Iterable
 

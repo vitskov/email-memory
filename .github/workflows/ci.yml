@@ -6,6 +6,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.12.5"
+  PYTHON_VERSION: "3.14"
+
 jobs:
   static-analysis:
     runs-on: ubuntu-latest
@@ -15,15 +22,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install static-analysis tools
+      - name: Install locked Python environment
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install mypy ruff
+          uv python install "$PYTHON_VERSION"
+          uv sync --locked --extra dev --python "$PYTHON_VERSION"
 
       - name: Run lint and typecheck gates
         env:
@@ -38,8 +47,9 @@ jobs:
           RUFF_TARGETS: "src scripts"
           RUFF_EXTRA_ARGS: "--select E9,F"
           MYPY_TARGETS: "src"
+          MYPY_EXTRA_ARGS: "--no-site-packages"
           MYPYPATH: src
-        run: ./scripts/check_quality.sh
+        run: uv run --locked --extra dev --no-sync -- ./scripts/check_quality.sh
 
   tests:
     runs-on: ubuntu-latest
@@ -47,16 +57,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install package and test dependencies
+      - name: Install locked Python environment
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
-          python -m pip install -e ".[test]"
+          uv python install "$PYTHON_VERSION"
+          uv sync --locked --extra dev --python "$PYTHON_VERSION"
 
       - name: Run syntax, dependency, and test gates
         env:
@@ -64,4 +75,34 @@ jobs:
           STRICT_DEPENDENCY_CHECK: "1"
           RUN_RUFF: "0"
           RUN_MYPY: "0"
-        run: ./scripts/check_quality.sh
+        run: uv run --locked --extra dev --no-sync -- ./scripts/check_quality.sh
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python
+        run: uv python install "$PYTHON_VERSION"
+
+      - name: Build and smoke-test distributions
+        run: |
+          uv build --no-sources --python "$PYTHON_VERSION"
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          test -n "$wheel"
+          package_env="$(mktemp -d)/venv"
+          UV_PROJECT_ENVIRONMENT="$package_env" \
+            uv sync --locked --no-install-project --python "$PYTHON_VERSION"
+          uv pip install --python "$package_env/bin/python" --no-deps "$wheel"
+          uv pip check --python "$package_env/bin/python"
+          "$package_env/bin/python" -c "import email_memory_store"
+          "$package_env/bin/email-memory-store" --help >/dev/null
+          "$package_env/bin/email-memory-store-mcp" --help >/dev/null
