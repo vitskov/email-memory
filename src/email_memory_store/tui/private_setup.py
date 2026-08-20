@@ -332,12 +332,14 @@ def _require_exact_keys(
 
 
 def _validate_string(value: object, *, artifact: str, key: str) -> None:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{artifact}.{key} must be a non-empty string")
 
 
 def _validate_string_list(value: object, *, artifact: str, key: str) -> None:
-    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
         raise ValueError(f"{artifact}.{key} must be a list of non-empty strings")
 
 
@@ -399,9 +401,9 @@ def _validate_retention(value: object, *, artifact: str) -> None:
         definitions = value["classification_definitions"]
         if not isinstance(definitions, dict) or not all(
             isinstance(key, str)
-            and key
+            and key.strip()
             and isinstance(definition, str)
-            and definition
+            and definition.strip()
             for key, definition in definitions.items()
         ):
             raise ValueError(
