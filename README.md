@@ -1,37 +1,71 @@
 # email-memory-store
 
-`email-memory-store` is a local-first library and command-line application for
-building a searchable, durable memory index from email. It stores normalized
-messages, derived facts, thread summaries, calendar data, and retrieval indexes
-in local state that the installed application controls.
+Turn email into a private, searchable memory that you can query from a terminal
+or an MCP-compatible assistant.
 
-The repository contains the reusable core. A structured local configuration
-bundle supplies state locations and deployment-specific policy. The core never
-embeds an identity, a message source, routing destination, machine path, or
-credential.
+`email-memory-store` is a local-first Python application for indexing message
+history as durable, traceable knowledge. It preserves normalized messages and
+threads, derives useful records such as facts, decisions, action items, and
+deadlines, and combines lexical and semantic retrieval so results retain their
+source context.
 
-## Security Boundary
+## Why use it?
 
-The public core and local data have separate responsibilities:
+- Find commitments, decisions, people, dates, and prior conversations without
+  manually searching mailbox folders.
+- Keep the database, vector index, cached artifacts, and policy on the machine
+  where the application runs.
+- Use the same retrieval engine interactively through the CLI or from an
+  MCP-compatible client.
+- Rebuild and reconcile indexes from durable source records instead of treating
+  the vector store as the source of truth.
 
-- The repository contains code, synthetic tests, generic documentation, schemas,
-  and packaged default assets.
-- The local runtime contains databases, raw message artifacts, caches, reports,
-  locally customized promotion assets, and other generated state.
-- Credential references, connection profiles, policy, and notification delivery
-  are local deployment concerns. They are not repository configuration.
-- Stable deployments select local data explicitly through a command-line path
-  or local runtime manifest. The CLI retains a generic XDG default for local
-  bootstrap; the MCP service requires an explicit attachment.
+## How it works
 
-See [Configuration](docs/CONFIGURATION.md) for the runtime manifest contract and
-[Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) for component boundaries.
+```text
+local mail connector
+        |
+        v
+ingest and normalize --> DuckDB records and provenance
+        |                            |
+        v                            v
+extract structured memory     build local vector indexes
+        |                            |
+        +------------+---------------+
+                     v
+             search or cited answers
+                     |
+                     v
+       optional downstream fact promotion
+```
+
+A typical lifecycle is:
+
+1. An explicitly configured local connector supplies messages to an ingestion
+   command.
+2. The store normalizes messages, threads, identities, and resumable ingestion
+   state in DuckDB.
+3. Extraction produces structured facts, decisions, actions, deadlines,
+   calendar events, and summaries.
+4. Reconciliation builds local vector collections from the durable records.
+5. The CLI or MCP service performs hybrid retrieval and returns provenance;
+   answer synthesis adds inline citation handles when an LLM provider is used.
+
+The publishable package and private deployment stay deliberately separate:
+
+| Public core | Local runtime |
+| --- | --- |
+| Schemas, storage and retrieval code, CLI and MCP entry points, generic assets, synthetic tests | Messages, databases, vector indexes, caches, reports, connector policy, credential references |
+| Safe to clone and test without personal data | Selected explicitly and kept outside the checkout |
+| Defines integration contracts | Owns connector, scheduling, notification, and downstream-service choices |
+
+See the [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) for component and
+trust boundaries.
 
 ## Install
 
-The repository is a PEP 517/621 Python package. It requires `uv >= 0.12.5` and
-Python `>= 3.14`; `uv` installs the default Python 3.14 interpreter and exact
-dependencies from the committed lock:
+You need Git and `uv >= 0.12.5`. The bootstrap script installs the project's
+Python 3.14 environment and locked dependencies:
 
 ```bash
 git clone https://github.com/vitskov/email-memory.git
@@ -39,103 +73,82 @@ cd email-memory
 ./scripts/bootstrap.sh
 ```
 
-Bootstrap auto-detects CPU, NVIDIA CUDA, or Apple MPS PyTorch support. Use
-`--accelerator cpu|cuda|mps` to require a specific backend.
-
-For contributor verification:
+Initialize a local runtime directory and confirm the store is available:
 
 ```bash
-./scripts/bootstrap.sh --dev
-./scripts/run_ci_locally.sh
+./.venv/bin/email-memory-store --root /path/to/runtime-root init-db
+./.venv/bin/email-memory-store --root /path/to/runtime-root status
 ```
 
-The runtime dependency list, isolated-environment layout, fresh-machine setup,
-upgrade procedure, and wheel build are documented in
-[Installation](docs/INSTALLATION.md).
+Runtime data belongs outside the repository and must not be committed. For a
+stable setup, use `./.venv/bin/email-memory-store setup-private` to create an
+owner-only runtime manifest and local policy bundle. The complete fresh-machine,
+accelerator, upgrade, and packaging procedures are in
+[Installation](docs/INSTALLATION.md); manifest schemas and precedence rules are
+in [Configuration](docs/CONFIGURATION.md).
 
-## Quick Start
+## CLI or MCP
 
-Choose a local runtime directory explicitly:
+Both interfaces use the same local retrieval engine but serve different jobs:
+
+| Interface | Best for | Runtime selection |
+| --- | --- | --- |
+| `email-memory-store` | Setup, ingestion, extraction, indexing, maintenance, terminal browsing, and direct queries | Explicit `--root` or runtime manifest; a generic XDG default is available for local bootstrap |
+| `email-memory-store-mcp` | Giving an MCP-compatible assistant the `search` and `ask` tools | An existing indexed runtime must be attached explicitly; there is no default runtime |
+
+For example, after indexing data, search it directly:
 
 ```bash
-email-memory-store --root /path/to/runtime-root init-db
-email-memory-store --root /path/to/runtime-root status
+./.venv/bin/email-memory-store --runtime-config /path/to/runtime.toml \
+  search --query "project decisions from last month"
 ```
 
-The runtime is created on first initialization. It is local state, not source
-code, and must not be added to version control.
-
-For a stable local deployment, create the owner-only local configuration bundle:
+Or register this stdio command with an MCP host:
 
 ```bash
-email-memory-store setup-private
+./.venv/bin/email-memory-store-mcp --runtime-config /path/to/runtime.toml
 ```
 
-The interactive setup writes three files under
-`${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/`: `runtime.toml`,
-`private.env.json`, and `policy.json`. It writes the directory with mode `0700`
-and each file with mode `0600`. Existing files are never replaced until the
-explicit overwrite confirmation is selected.
+The MCP launcher fails closed when the runtime attachment is absent, invalid,
+or has no initialized vector index. See [MCP Integration](docs/MCP_INTEGRATION.md)
+for host-agnostic registration, tool behavior, and troubleshooting.
 
-Run the core against the generated runtime manifest:
+## Optional Hermes integration
 
-```bash
-email-memory-store --runtime-config /path/to/runtime.toml init-db
-email-memory-store --runtime-config /path/to/runtime.toml status
-```
+Hermes is an optional LLM command-line integration, not an installation or MCP
+requirement. Ingestion, indexing, maintenance, browsing, CLI search, and the MCP
+`search` tool do not use it.
 
-The bundle schema, regeneration behavior, and runtime precedence rules are in
-[Configuration](docs/CONFIGURATION.md).
+The cited-answer and promotion workflows do require a supported LLM command-line
+provider. `hermes-default` is used when no provider is specified; `codex-cli`
+and `claude-code-cli` are also supported when an explicit model is supplied.
+Install and configure whichever provider you choose separately from this
+project. The [MCP Integration guide](docs/MCP_INTEGRATION.md#optional-llm-providers)
+explains the boundary.
 
-## MCP Startup
+## Choose your path
 
-The `email-memory-store-mcp` launcher uses the same runtime attachment contract
-as the CLI. Pass either an explicit root or a runtime manifest at startup:
+- **First-time user:** follow [Installation](docs/INSTALLATION.md), then create a
+  private runtime using [Configuration](docs/CONFIGURATION.md).
+- **Operator:** use [Configuration](docs/CONFIGURATION.md) for runtime selection,
+  local policy, permissions, and generated operational artifacts.
+- **MCP integrator:** start with [MCP Integration](docs/MCP_INTEGRATION.md).
+- **Contributor:** read the [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md)
+  before changing storage, ingestion, retrieval, or runtime boundaries.
+- **Maintainer preparing a public release:** follow
+  [Privacy Release Controls](docs/PRIVACY_RELEASE_CONTROLS.md).
 
-```bash
-email-memory-store-mcp --root /path/to/runtime-root
-email-memory-store-mcp --runtime-config /path/to/runtime.toml
-```
+Run `./.venv/bin/email-memory-store --help` for the full command surface.
+Detailed operating and release procedures remain in the linked guides so this
+page can stay a map of the project rather than a deployment runbook.
 
-The launcher resolves the attachment once before stdio opens. If the runtime
-attachment is missing or invalid, or `<runtime_root>/chroma` is not an existing
-initialized store with indexed data, startup fails without creating a
-replacement index. The same configured retrieval engine serves both MCP tools.
+## Privacy boundary
 
-## Capabilities
-
-The core provides:
-
-- durable DuckDB storage for normalized messages and derived records
-- incremental ingestion and targeted recovery operations
-- thread and identity reconciliation
-- extraction of facts, decisions, actions, deadlines, and calendar events
-- lexical and semantic retrieval with provenance
-- local vector-index backfill and reconciliation
-- auditable promotion planning for compact downstream facts
-- a CLI, MCP stdio entry point, and terminal browser
-
-Run `email-memory-store --help` for the complete command surface. Commands that
-read from a message source require explicit local connector configuration and
-command inputs; the public core does not provide deployment defaults for them.
-
-## Repository Policy
-
-This repository is intended to remain safe to publish. Do not add local runtime
-state, configuration bundles, credentials, message content, generated reports,
-or deployment automation here. Credential fields in local configuration are for
-references; never place secret values in them. Use synthetic fixtures and reserved example
-domains in tests and documentation.
-
-Release checks must examine the complete publishable Git history and archive, not
-only the working tree. The public remote belongs only to the sanitized publishing
-clone; operational working copies should not have a writable public push remote.
-
-The hosted `privacy` job applies generic, value-free rules to tracked content,
-reachable Git history, the release archive, and built distributions. Repository
-rules for `main` must require that job before a pull request can merge. A local
-deployment must additionally run its ignored, locally populated identifier
-denylist against the clean public candidate repository before pushing. Exact
-private identifiers must never be copied into this repository or GitHub settings.
-See [Privacy release controls](docs/PRIVACY_RELEASE_CONTROLS.md) for the control
-boundary and release procedure.
+Do not add runtime state, message content, credentials, local configuration,
+generated reports, private identifiers, or deployment automation to this
+repository. Public fixtures and examples must be synthetic. The release gate
+checks tracked content, reachable Git history, source archives, and built
+distributions; deployment owners must also apply their private, ignored
+identifier denylist before publication. See
+[Privacy Release Controls](docs/PRIVACY_RELEASE_CONTROLS.md) for the complete
+procedure.
