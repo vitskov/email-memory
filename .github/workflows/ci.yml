@@ -93,8 +93,6 @@ jobs:
           RUFF_TARGETS: "src scripts"
           RUFF_EXTRA_ARGS: "--select E9,F"
           MYPY_TARGETS: "src"
-          MYPY_EXTRA_ARGS: "--no-site-packages"
-          MYPYPATH: src
         run: uv run --locked --extra dev --no-sync -- ./scripts/check_quality.sh
 
   tests:

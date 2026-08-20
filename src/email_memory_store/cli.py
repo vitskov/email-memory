@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from .db_rows import require_row, require_scalar
 from .himalaya import HimalayaClient
 from .holographic import default_holographic_db_path
 from .ingestion.service import ingest_account_folders, ingest_envelopes, ingest_message_bodies, run_failed_body_backfill, run_ingestion_state_repair, run_initial_ingestion, run_nightly_update, run_rfc_metadata_backfill
@@ -967,7 +968,7 @@ def _count_holographic_fact_sources(db_path: Path) -> int | None:
         return None
     try:
         with sqlite3.connect(db_path) as conn:
-            return int(conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
+            return int(require_scalar(conn.execute("SELECT COUNT(*) FROM facts").fetchone(), operation='count holographic facts'))
     except sqlite3.Error:
         return None
 
@@ -983,7 +984,7 @@ def _count_message_chunk_sources(store: EmailMemoryStore) -> int:
 
 def _count_calendar_event_sources(store: EmailMemoryStore) -> int:
     return int(
-        store.conn.execute(
+        require_scalar(store.conn.execute(
             """
             SELECT COUNT(*)
             FROM calendar_events
@@ -999,7 +1000,7 @@ def _count_calendar_event_sources(store: EmailMemoryStore) -> int:
                OR COALESCE(attendees_json, '') <> ''
                OR COALESCE(uid, '') <> ''
             """
-        ).fetchone()[0]
+        ).fetchone(), operation='count calendar event sources')
     )
 
 
@@ -1010,7 +1011,7 @@ def _build_promotion_health(store: EmailMemoryStore) -> dict[str, object]:
             "SELECT status, COUNT(*) FROM promotion_log GROUP BY 1 ORDER BY 1"
         ).fetchall()
     }
-    latest_row = store.conn.execute(
+    latest_row = require_row(store.conn.execute(
         """
         SELECT
             MAX(promoted_at),
@@ -1019,16 +1020,16 @@ def _build_promotion_health(store: EmailMemoryStore) -> dict[str, object]:
             MAX(revised_at)
         FROM promotion_log
         """
-    ).fetchone()
+    ).fetchone(), operation='load latest promotion timestamps')
     llm_config = PromotionLLMConfig.from_dict(store.get_promotion_llm_config())
     written_without_fact_id = int(
-        store.conn.execute(
+        require_scalar(store.conn.execute(
             """
             SELECT COUNT(*)
             FROM promotion_log
             WHERE status = 'fact_store_written' AND holographic_fact_id IS NULL
             """
-        ).fetchone()[0]
+        ).fetchone(), operation='count written promotions without fact ids')
     )
     return {
         'configured_provider': llm_config.provider.name,
@@ -1057,10 +1058,10 @@ def _build_retrieval_health(
         'holographic_facts': _count_holographic_fact_sources(
             Path(fact_store_db) if fact_store_db is not None else default_holographic_db_path()
         ),
-        'action_items': int(store.conn.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]),
-        'deadlines': int(store.conn.execute("SELECT COUNT(*) FROM deadlines").fetchone()[0]),
-        'decisions': int(store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]),
-        'thread_summaries': int(store.conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone()[0]),
+        'action_items': int(require_scalar(store.conn.execute("SELECT COUNT(*) FROM action_items").fetchone(), operation='count action items')),
+        'deadlines': int(require_scalar(store.conn.execute("SELECT COUNT(*) FROM deadlines").fetchone(), operation='count deadlines')),
+        'decisions': int(require_scalar(store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone(), operation='count decisions')),
+        'thread_summaries': int(require_scalar(store.conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone(), operation='count thread summaries')),
         'message_chunks': _count_message_chunk_sources(store),
         'calendar_events': _count_calendar_event_sources(store),
     }
@@ -1189,9 +1190,9 @@ def cmd_browse(args: argparse.Namespace) -> None:
 def cmd_extraction_status(args: argparse.Namespace) -> None:
     store = _open_store(args)
     try:
-        threads_total = store.conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
-        threads_extracted = store.conn.execute("SELECT COUNT(DISTINCT thread_id) FROM thread_summaries").fetchone()[0]
-        threads_pending = store.conn.execute(
+        threads_total = require_scalar(store.conn.execute("SELECT COUNT(*) FROM threads").fetchone(), operation='count threads')
+        threads_extracted = require_scalar(store.conn.execute("SELECT COUNT(DISTINCT thread_id) FROM thread_summaries").fetchone(), operation='count extracted threads')
+        threads_pending = require_scalar(store.conn.execute(
             """
             SELECT COUNT(DISTINCT t.thread_id)
             FROM threads t
@@ -1201,11 +1202,11 @@ def cmd_extraction_status(args: argparse.Namespace) -> None:
               AND m.cleaned_text IS NOT NULL
               AND length(trim(m.cleaned_text)) > 0
             """
-        ).fetchone()[0]
-        action_items_count = store.conn.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
-        deadlines_count = store.conn.execute("SELECT COUNT(*) FROM deadlines").fetchone()[0]
-        decisions_count = store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
-        thread_summaries_count = store.conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone()[0]
+        ).fetchone(), operation='count pending threads')
+        action_items_count = require_scalar(store.conn.execute("SELECT COUNT(*) FROM action_items").fetchone(), operation='count action items')
+        deadlines_count = require_scalar(store.conn.execute("SELECT COUNT(*) FROM deadlines").fetchone(), operation='count deadlines')
+        decisions_count = require_scalar(store.conn.execute("SELECT COUNT(*) FROM decisions").fetchone(), operation='count decisions')
+        thread_summaries_count = require_scalar(store.conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone(), operation='count thread summaries')
         status = {
             'threads_total': int(threads_total),
             'threads_extracted': int(threads_extracted),

@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..holographic import HolographicMemoryWriter
+from ..db_rows import require_scalar
 from ..operational_artifacts import write_private_text
 from ..store import EmailMemoryStore
 from .llm import BatchPlanner, PromotionLLMConfig, create_provider, load_soul_text, render_batch_prompt
@@ -450,10 +451,10 @@ class EmailPromotionService:
     def mark_fact_store_written(self, batch_id: str, fact_map: dict[str, int]) -> int:
         updated = 0
         for dedup_key, fact_id in fact_map.items():
-            before = self.store.conn.execute(
+            before = require_scalar(self.store.conn.execute(
                 "SELECT COUNT(*) FROM promotion_log WHERE fact_store_dedup_key = ? AND status = 'fact_store_ready'",
                 [dedup_key],
-            ).fetchone()[0]
+            ).fetchone(), operation='count fact-store-ready promotions')
             self.store.conn.execute(
                 """
                 UPDATE promotion_log
@@ -471,10 +472,10 @@ class EmailPromotionService:
     def mark_fact_store_demoted(self, reason_map: dict[str, str]) -> int:
         updated = 0
         for dedup_key, reason in reason_map.items():
-            before = self.store.conn.execute(
+            before = require_scalar(self.store.conn.execute(
                 "SELECT COUNT(*) FROM promotion_log WHERE fact_store_dedup_key = ? AND status = 'fact_store_written'",
                 [dedup_key],
-            ).fetchone()[0]
+            ).fetchone(), operation='count written promotions before demotion')
             self.store.conn.execute(
                 """
                 UPDATE promotion_log
@@ -492,10 +493,10 @@ class EmailPromotionService:
     def mark_fact_store_edited(self, edit_map: dict[str, dict[str, str]]) -> int:
         updated = 0
         for dedup_key, payload in edit_map.items():
-            before = self.store.conn.execute(
+            before = require_scalar(self.store.conn.execute(
                 "SELECT COUNT(*) FROM promotion_log WHERE fact_store_dedup_key = ? AND status = 'fact_store_written'",
                 [dedup_key],
-            ).fetchone()[0]
+            ).fetchone(), operation='count written promotions before edit')
             self.store.conn.execute(
                 """
                 UPDATE promotion_log

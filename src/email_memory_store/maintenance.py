@@ -4,6 +4,7 @@ from typing import Any
 
 import duckdb
 
+from .db_rows import require_scalar
 from .entity_schema import ENTITY_SCHEMA_SQL
 from .entity_store import EntityMemoryStore
 from .schema import SCHEMA_SQL
@@ -51,12 +52,12 @@ def _rebuild_indexed_table(
     cols = [row[1] for row in conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()]
     cols_csv = ', '.join(cols)
 
-    before_count = int(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0])
-    max_pk = int(conn.execute(f'SELECT COALESCE(MAX({pk_col}), 0) FROM {table_name}').fetchone()[0])
+    before_count = int(require_scalar(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone(), operation=f'count {table_name} before rebuild'))
+    max_pk = int(require_scalar(conn.execute(f'SELECT COALESCE(MAX({pk_col}), 0) FROM {table_name}').fetchone(), operation=f'find maximum {pk_col}'))
 
     staging = f'{table_name}_rebuild_staging'
     conn.execute(f'CREATE TABLE {staging} AS SELECT {cols_csv} FROM {table_name}')
-    staging_count = int(conn.execute(f'SELECT COUNT(*) FROM {staging}').fetchone()[0])
+    staging_count = int(require_scalar(conn.execute(f'SELECT COUNT(*) FROM {staging}').fetchone(), operation=f'count staged {table_name} rows'))
     if staging_count != before_count:
         conn.execute(f'DROP TABLE IF EXISTS {staging}')
         raise RuntimeError(
@@ -66,7 +67,7 @@ def _rebuild_indexed_table(
     conn.execute(f'DROP TABLE {table_name}')
     conn.execute(schema_sql)
     conn.execute(f'INSERT INTO {table_name}({cols_csv}) SELECT {cols_csv} FROM {staging}')
-    after_count = int(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()[0])
+    after_count = int(require_scalar(conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone(), operation=f'count {table_name} after rebuild'))
     conn.execute(f'DROP TABLE {staging}')
     if after_count != before_count:
         raise RuntimeError(
@@ -77,7 +78,7 @@ def _rebuild_indexed_table(
     if max_pk > 0:
         target = max_pk + 1
         while True:
-            advanced_to = int(conn.execute(f"SELECT nextval('{seq_name}')").fetchone()[0])
+            advanced_to = int(require_scalar(conn.execute(f"SELECT nextval('{seq_name}')").fetchone(), operation=f'advance {seq_name}'))
             if advanced_to >= target:
                 break
 

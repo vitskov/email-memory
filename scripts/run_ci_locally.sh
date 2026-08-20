@@ -31,8 +31,6 @@ run_static_analysis() {
     RUFF_TARGETS="src scripts" \
     RUFF_EXTRA_ARGS="--select E9,F" \
     MYPY_TARGETS="src" \
-    MYPY_EXTRA_ARGS="--no-site-packages" \
-    MYPYPATH="src" \
     ./scripts/check_quality.sh
 }
 

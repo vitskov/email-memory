@@ -13,6 +13,7 @@ from .promotion.llm import normalize_promotion_llm_config, promotion_llm_config_
 import duckdb
 
 from .config import EmailMemoryPaths
+from .db_rows import require_row, require_scalar
 from .entity_store import EntityMemoryStore
 from .schema import SCHEMA_SQL
 
@@ -138,11 +139,17 @@ class EmailMemoryStore:
     def stats(self) -> dict[str, Any]:
         table_counts = {}
         for table in self.list_tables():
-            table_counts[table] = self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            table_counts[table] = require_scalar(
+                self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone(),
+                operation=f'count rows in {table}',
+            )
         entity_table_counts = {}
         entity_tables = [row[0] for row in self.entity_store.conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name").fetchall()]
         for table in entity_tables:
-            entity_table_counts[table] = self.entity_store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            entity_table_counts[table] = require_scalar(
+                self.entity_store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone(),
+                operation=f'count entity rows in {table}',
+            )
         return {
             'root': str(self.paths.root),
             'db_path': str(self.paths.db_path),
@@ -171,7 +178,7 @@ class EmailMemoryStore:
             "SELECT COALESCE(identity_source, 'provisional') AS source, COUNT(*) FROM messages GROUP BY 1"
         ).fetchall()
         identity_sources = {row[0]: int(row[1]) for row in identity_rows}
-        processing_row = self._conn.execute(
+        processing_row = require_row(self._conn.execute(
             """
             SELECT
                 COUNT(*) AS total,
@@ -183,7 +190,7 @@ class EmailMemoryStore:
                 COUNT(*) FILTER (WHERE stable_message_id LIKE 'rfc822:%') AS rfc822_ids
             FROM messages
             """
-        ).fetchone()
+        ).fetchone(), operation='summarize message processing state')
         sync_counts: dict[str, dict[str, int]] = {}
         for sync_kind, status, count in self._conn.execute(
             "SELECT sync_kind, status, COUNT(*) FROM ingest_sync_state GROUP BY 1, 2 ORDER BY 1, 2"
@@ -266,18 +273,18 @@ class EmailMemoryStore:
             )
         continuation_commands.sort(key=lambda row: (row['command'], row['account_name'], row['folders']))
         extraction_counts = {
-            'action_items': int(self._conn.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]),
-            'deadlines': int(self._conn.execute("SELECT COUNT(*) FROM deadlines").fetchone()[0]),
-            'calendar_events': int(self._conn.execute("SELECT COUNT(*) FROM calendar_events").fetchone()[0]),
-            'thread_summaries': int(self._conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone()[0]),
-            'promotion_log': int(self._conn.execute("SELECT COUNT(*) FROM promotion_log").fetchone()[0]),
+            'action_items': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM action_items").fetchone(), operation='count action items')),
+            'deadlines': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM deadlines").fetchone(), operation='count deadlines')),
+            'calendar_events': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM calendar_events").fetchone(), operation='count calendar events')),
+            'thread_summaries': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM thread_summaries").fetchone(), operation='count thread summaries')),
+            'promotion_log': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM promotion_log").fetchone(), operation='count promotion log rows')),
         }
         failed_ingestion_counts = {
-            'open': int(self._conn.execute("SELECT COUNT(*) FROM failed_message_ingestions WHERE status <> 'resolved'").fetchone()[0]),
-            'resolved': int(self._conn.execute("SELECT COUNT(*) FROM failed_message_ingestions WHERE status = 'resolved'").fetchone()[0]),
+            'open': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM failed_message_ingestions WHERE status <> 'resolved'").fetchone(), operation='count open failed message ingestions')),
+            'resolved': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM failed_message_ingestions WHERE status = 'resolved'").fetchone(), operation='count resolved failed message ingestions')),
         }
         cross_folder_threads = int(
-            self._conn.execute(
+            require_scalar(self._conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM (
@@ -288,7 +295,7 @@ class EmailMemoryStore:
                     HAVING COUNT(DISTINCT ml.label) > 1
                 ) cross_folder
                 """
-            ).fetchone()[0]
+            ).fetchone(), operation='count cross-folder threads')
         )
         return {
             'runtime': {
@@ -310,7 +317,7 @@ class EmailMemoryStore:
                 'cross_folder_threads': cross_folder_threads,
             },
             'ingestion': {
-                'folders': int(self._conn.execute("SELECT COUNT(*) FROM folders").fetchone()[0]),
+                'folders': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM folders").fetchone(), operation='count folders')),
                 'sync_state_counts': sync_counts,
                 'active_sync_states': active_sync_states,
                 'continuation_commands': continuation_commands,
@@ -319,12 +326,12 @@ class EmailMemoryStore:
             },
             'extraction': extraction_counts,
             'entities': {
-                'contacts': int(self._conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]),
-                'email_entity_links': int(self._conn.execute("SELECT COUNT(*) FROM email_entity_index").fetchone()[0]),
-                'people': int(self.entity_store.conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]),
-                'person_aliases': int(self.entity_store.conn.execute("SELECT COUNT(*) FROM person_aliases").fetchone()[0]),
-                'person_emails': int(self.entity_store.conn.execute("SELECT COUNT(*) FROM person_emails").fetchone()[0]),
-                'entity_message_links': int(self.entity_store.conn.execute("SELECT COUNT(*) FROM message_entity_index").fetchone()[0]),
+                'contacts': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM contacts").fetchone(), operation='count contacts')),
+                'email_entity_links': int(require_scalar(self._conn.execute("SELECT COUNT(*) FROM email_entity_index").fetchone(), operation='count email entity links')),
+                'people': int(require_scalar(self.entity_store.conn.execute("SELECT COUNT(*) FROM people").fetchone(), operation='count people')),
+                'person_aliases': int(require_scalar(self.entity_store.conn.execute("SELECT COUNT(*) FROM person_aliases").fetchone(), operation='count person aliases')),
+                'person_emails': int(require_scalar(self.entity_store.conn.execute("SELECT COUNT(*) FROM person_emails").fetchone(), operation='count person emails')),
+                'entity_message_links': int(require_scalar(self.entity_store.conn.execute("SELECT COUNT(*) FROM message_entity_index").fetchone(), operation='count entity message links')),
             },
         }
 
@@ -411,16 +418,16 @@ class EmailMemoryStore:
                 [account_name, folder_name, mailbox_message_id, stable_message_id, failure_kind, error],
             )
             failed_message_ingestion_id = int(
-                self._conn.execute(
+                require_scalar(self._conn.execute(
                     """
                     SELECT failed_message_ingestion_id
                     FROM failed_message_ingestions
                     WHERE account_name = ? AND folder_name = ? AND mailbox_message_id = ? AND failure_kind = ?
                     """,
                     [account_name, folder_name, mailbox_message_id, failure_kind],
-                ).fetchone()[0]
+                ).fetchone(), operation='load failed message ingestion id')
             )
-        row = self._conn.execute(
+        row = require_row(self._conn.execute(
             """
             SELECT account_name, folder_name, mailbox_message_id, stable_message_id, failure_kind,
                    error, retry_count, status, first_failed_at, last_failed_at, resolved_at
@@ -428,7 +435,7 @@ class EmailMemoryStore:
             WHERE failed_message_ingestion_id = ?
             """,
             [failed_message_ingestion_id],
-        ).fetchone()
+        ).fetchone(), operation='load failed message ingestion')
         return {
             'account_name': row[0],
             'folder_name': row[1],
@@ -733,7 +740,7 @@ class EmailMemoryStore:
             "INSERT INTO accounts(account_name, email_address, provider) VALUES (?, ?, ?) RETURNING account_id",
             [account_name, email_address, provider],
         ).fetchone()
-        return int(inserted[0])
+        return int(require_scalar(inserted, operation='create account'))
 
     def ensure_folder(self, account_id: int, folder_name: str, folder_type: str | None = None) -> int:
         row = self._conn.execute(
@@ -750,7 +757,7 @@ class EmailMemoryStore:
             "INSERT INTO folders(account_id, folder_name, folder_type) VALUES (?, ?, ?) RETURNING folder_id",
             [account_id, folder_name, folder_type],
         ).fetchone()
-        return int(inserted[0])
+        return int(require_scalar(inserted, operation='create folder'))
 
     def ensure_contact(self, email_address: str, display_name: str | None = None) -> int:
         row = self._conn.execute(
@@ -767,7 +774,7 @@ class EmailMemoryStore:
             "INSERT INTO contacts(primary_email, display_name, first_seen_at, last_seen_at) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING contact_id",
             [email_address.lower(), display_name],
         ).fetchone()
-        return int(inserted[0])
+        return int(require_scalar(inserted, operation='create contact'))
 
     def ensure_thread(self, account_id: int, thread_key: str, canonical_subject: str | None) -> int:
         row = self._conn.execute(
@@ -784,7 +791,7 @@ class EmailMemoryStore:
             "INSERT INTO threads(account_id, thread_key, canonical_subject) VALUES (?, ?, ?) RETURNING thread_id",
             [account_id, thread_key, canonical_subject],
         ).fetchone()
-        return int(inserted[0])
+        return int(require_scalar(inserted, operation='create thread'))
 
     @staticmethod
     def _identity_precedence(identity_source: str | None) -> int:
@@ -816,7 +823,7 @@ class EmailMemoryStore:
         return incoming_thread_key
 
     def _refresh_thread_state(self, *, thread_key: str, canonical_subject: str | None = None) -> None:
-        row = self._conn.execute(
+        row = require_row(self._conn.execute(
             """
             SELECT
                 MIN(COALESCE(sent_at, received_at)) AS first_message_at,
@@ -827,8 +834,8 @@ class EmailMemoryStore:
             WHERE thread_key = ?
             """,
             [thread_key],
-        ).fetchone()
-        message_count = int(row[2]) if row and row[2] is not None else 0
+        ).fetchone(), operation='summarize thread state')
+        message_count = int(row[2]) if row[2] is not None else 0
         if message_count == 0:
             self._conn.execute("DELETE FROM threads WHERE thread_key = ?", [thread_key])
             return
@@ -916,7 +923,7 @@ class EmailMemoryStore:
                 existing_thread_key=existing_thread_key,
                 incoming_thread_key=thread_key,
             )
-            existing_row = self._conn.execute(
+            existing_row = require_row(self._conn.execute(
                 """
                 SELECT folder_id, mailbox_message_id, subject, normalized_subject, from_name,
                        to_addrs, sent_at, has_attachments, direction, is_read, identity_source
@@ -924,7 +931,7 @@ class EmailMemoryStore:
                 WHERE message_pk = ?
                 """,
                 [existing_message_pk],
-            ).fetchone()
+            ).fetchone(), operation='load existing message stub')
             update_clauses: list[str] = []
             update_params: list[Any] = []
             if folder_id != existing_row[0]:
@@ -984,7 +991,7 @@ class EmailMemoryStore:
             """,
             [account_id, folder_id, mailbox_message_id, stable_message_id, identity_source, internet_message_id, thread_key, subject, normalized_subject, from_name, from_addr, to_addrs, sent_at, received_at, has_attachments, direction, is_read],
         ).fetchone()
-        return int(inserted[0]), True
+        return int(require_scalar(inserted, operation='create message stub')), True
 
     def update_message_content(self, *, message_pk: int, cleaned_text: str, raw_path: str | None = None, text_hash: str | None = None) -> None:
         self._conn.execute(
@@ -1578,22 +1585,22 @@ class EmailMemoryStore:
         if dry_run or not message_pks:
             return counts
         msg_placeholders = ','.join(['?'] * len(message_pks))
-        counts['labels_deleted'] = int(self._conn.execute(
+        counts['labels_deleted'] = int(require_scalar(self._conn.execute(
             f"SELECT COUNT(*) FROM message_labels WHERE message_pk IN ({msg_placeholders})",
             message_pks,
-        ).fetchone()[0])
-        counts['calendar_events_deleted'] = int(self._conn.execute(
+        ).fetchone(), operation='count labels to delete'))
+        counts['calendar_events_deleted'] = int(require_scalar(self._conn.execute(
             f"SELECT COUNT(*) FROM calendar_events WHERE message_pk IN ({msg_placeholders})",
             message_pks,
-        ).fetchone()[0])
-        counts['email_entity_links_deleted'] = int(self._conn.execute(
+        ).fetchone(), operation='count calendar events to delete'))
+        counts['email_entity_links_deleted'] = int(require_scalar(self._conn.execute(
             f"SELECT COUNT(*) FROM email_entity_index WHERE message_pk IN ({msg_placeholders})",
             message_pks,
-        ).fetchone()[0])
-        counts['entity_message_links_deleted'] = int(self.entity_store.conn.execute(
+        ).fetchone(), operation='count email entity links to delete'))
+        counts['entity_message_links_deleted'] = int(require_scalar(self.entity_store.conn.execute(
             f"SELECT COUNT(*) FROM message_entity_index WHERE email_message_pk IN ({msg_placeholders})",
             message_pks,
-        ).fetchone()[0])
+        ).fetchone(), operation='count entity message links to delete'))
         self._conn.execute(f"DELETE FROM message_labels WHERE message_pk IN ({msg_placeholders})", message_pks)
         self._conn.execute(f"DELETE FROM calendar_events WHERE message_pk IN ({msg_placeholders})", message_pks)
         self._conn.execute(f"DELETE FROM email_entity_index WHERE message_pk IN ({msg_placeholders})", message_pks)

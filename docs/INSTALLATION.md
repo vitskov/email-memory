@@ -199,6 +199,18 @@ to the checkout. Maintainers intentionally refresh dependencies with
 `uv lock --upgrade`, run all checks on Python 3.14, review the lock diff, and
 commit the metadata and lock together.
 
+The static-analysis gate intentionally uses the installed dependency types; it
+does not pass `--no-site-packages` or suppress third-party imports. Run the
+same check that hosted CI runs with:
+
+```bash
+uv run --locked --extra dev mypy --config-file pyproject.toml src
+```
+
+Database queries that must return a row use an explicit row contract, so an
+unexpected empty result is reported clearly instead of being hidden from type
+checking.
+
 Before reconnecting a deployed MCP service:
 
 1. run `uv pip check` against the isolated environment;
