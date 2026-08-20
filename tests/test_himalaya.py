@@ -21,8 +21,9 @@ def test_parse_folder_list_output_ignores_headers_and_returns_names():
 def test_remove_flags_uses_himalaya_flag_remove(monkeypatch):
     calls = []
 
-    def fake_run(args, *, text, capture_output, check):
+    def fake_run(args, *, text, capture_output, check, timeout):
         calls.append(args)
+        assert timeout == 60.0
         return subprocess.CompletedProcess(args=args, returncode=0, stdout=b'', stderr=b'')
 
     monkeypatch.setattr(subprocess, 'run', fake_run)
@@ -97,7 +98,7 @@ def test_run_does_not_retry_permanent_errors(monkeypatch):
     attempts = []
     sleeps = []
 
-    def fake_run(args, *, text, capture_output, check):
+    def fake_run(args, *, text, capture_output, check, timeout):
         attempts.append(args)
         raise _error(OUT_OF_BOUNDS_STDERR)
 
@@ -120,7 +121,7 @@ def test_run_retries_transient_errors_with_exponential_backoff(monkeypatch):
     attempts = []
     sleeps = []
 
-    def fake_run(args, *, text, capture_output, check):
+    def fake_run(args, *, text, capture_output, check, timeout):
         attempts.append(args)
         if len(attempts) < 3:
             raise _error(TRANSIENT_STDERR)
@@ -141,7 +142,7 @@ def test_run_retries_transient_errors_with_exponential_backoff(monkeypatch):
 def test_run_backoff_is_capped(monkeypatch):
     sleeps = []
 
-    def fake_run(args, *, text, capture_output, check):
+    def fake_run(args, *, text, capture_output, check, timeout):
         raise _error(TRANSIENT_STDERR)
 
     monkeypatch.setattr(subprocess, 'run', fake_run)
@@ -154,3 +155,29 @@ def test_run_backoff_is_capped(monkeypatch):
         pass
 
     assert sleeps == [10.0, 20.0, 30.0, 30.0, 30.0]
+
+
+def test_run_retries_timeouts_as_transient_provider_failures(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    def fake_run(args, *, text, capture_output, check, timeout):
+        attempts.append((args, timeout))
+        if len(attempts) == 1:
+            raise subprocess.TimeoutExpired(args, timeout)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b'[]', stderr=b'')
+
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    monkeypatch.setattr('email_memory_store.himalaya.time.sleep', lambda s: sleeps.append(s))
+
+    client = HimalayaClient(binary='himalaya', retries=2, retry_delay=3.0, command_timeout_seconds=11.0)
+    assert client.list_envelopes(account='primary-account') == []
+    assert [timeout for _, timeout in attempts] == [11.0, 11.0]
+    assert sleeps == [3.0]
+
+
+def test_himalaya_client_rejects_non_positive_command_timeout():
+    import pytest
+
+    with pytest.raises(ValueError, match='must be positive'):
+        HimalayaClient(command_timeout_seconds=0)

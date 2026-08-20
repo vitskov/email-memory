@@ -40,7 +40,7 @@ def test_parse_folder_list_output_preserves_nested_folder_names():
 def test_himalaya_client_retries_transient_folder_list_failures(monkeypatch):
     calls = {'count': 0}
 
-    def fake_run(args, text, capture_output, check):
+    def fake_run(args, text, capture_output, check, timeout):
         calls['count'] += 1
         if calls['count'] == 1:
             raise subprocess.CalledProcessError(1, args, stderr='transient failure')
