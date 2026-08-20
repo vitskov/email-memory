@@ -84,6 +84,11 @@ def test_runtime_attachment_is_required() -> None:
         mcp_server._resolve_runtime_root(root=None, runtime_config=None, environ={})
 
 
+def test_provider_spec_requires_runtime_settings() -> None:
+    with pytest.raises(mcp_server.MCPConfigurationError, match="not configured"):
+        mcp_server._provider_spec_with_runtime({}, None)
+
+
 def test_manifest_must_select_a_runtime(tmp_path: Path) -> None:
     manifest = tmp_path / "runtime.toml"
     manifest.write_text("schema_version = 1\n", encoding="utf-8")
@@ -123,6 +128,34 @@ def test_build_engine_uses_existing_runtime_chroma_store(tmp_path: Path, monkeyp
     )
 
     assert engine is sentinel_engine
+    assert captured["persist_path"] == chroma_path
+
+
+def test_build_engine_uses_exact_v2_vector_store_path(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    chroma_path = _initialized_runtime(tmp_path / "separate-vector-state")
+    manifest = tmp_path / "runtime.toml"
+    manifest.write_text(f'''schema_version = 2
+[storage]
+runtime_root = "{runtime_root}"
+main_db = "{tmp_path / 'main.duckdb'}"
+entity_db = "{tmp_path / 'entity.duckdb'}"
+vector_store = "{chroma_path}"
+''', encoding="utf-8")
+    captured: dict[str, Path] = {}
+
+    class FakeVectorStore:
+        def __init__(self, persist_path) -> None:
+            captured["persist_path"] = Path(persist_path)
+
+        def existing_collection_counts(self) -> dict[str, int]:
+            return {"holographic_facts": 1}
+
+    monkeypatch.setattr(mcp_server, "VectorStore", FakeVectorStore)
+    monkeypatch.setattr(mcp_server, "RetrievalEngine", lambda *, vector_store: object())
+
+    mcp_server._build_engine(root=None, runtime_config=manifest, environ={})
+
     assert captured["persist_path"] == chroma_path
 
 
@@ -294,7 +327,13 @@ def test_server_reuses_one_engine_for_search_and_ask(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server, "Answerer", FakeAnswerer)
     engine = FakeEngine()
 
-    server = mcp_server.build_server(engine=engine)
+    server = mcp_server.build_server(
+        engine=engine,
+        runtime_settings=RuntimeSettings(
+            runtime_root=Path('/runtime'),
+            hermes_executable=Path('/opt/bin/hermes-current'),
+        ),
+    )
     tools = asyncio.run(server.list_tools_handler())
     search_response = asyncio.run(server.call_tool_handler("search", {"query": "synthetic"}))
     ask_response = asyncio.run(server.call_tool_handler("ask", {"query": "synthetic"}))

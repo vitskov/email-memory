@@ -229,6 +229,7 @@ async def test_semantic_search_screen_uses_injected_vector_store(monkeypatch):
 
 async def test_ask_screen_uses_injected_vector_store(monkeypatch):
     from email_memory_store.tui.screens import AskScreen
+    from email_memory_store.promotion.llm import LLMProviderSpec
 
     sentinel = object()
     captured = {}
@@ -244,15 +245,40 @@ async def test_ask_screen_uses_injected_vector_store(monkeypatch):
     class FakeAnswerer:
         def __init__(self, *, engine, provider_spec=None):
             captured['engine'] = engine
+            captured['provider_spec'] = provider_spec
 
         def answer(self, query, *, effort, limit, filters):
             return SimpleNamespace(answer='done', used_handles=[], citations=[])
 
     monkeypatch.setattr('email_memory_store.retrieval.engine.RetrievalEngine', FakeEngine)
     monkeypatch.setattr('email_memory_store.retrieval.answerer.Answerer', FakeAnswerer)
-    screen = AskScreen(vector_store=sentinel)
+    provider_spec = LLMProviderSpec(executable='/opt/bin/hermes-current')
+    screen = AskScreen(vector_store=sentinel, provider_spec=provider_spec)
     screen.query_one = lambda *_args, **_kwargs: FakeMarkdown()
 
     screen.on_input_submitted(SimpleNamespace(value='question'))
 
     assert captured['vector_store'] is sentinel
+    assert captured['provider_spec'] is provider_spec
+
+
+async def test_ask_screen_reports_missing_runtime_provider_configuration():
+    from email_memory_store.tui.screens import AskScreen
+
+    captured: dict[str, list[str]] = {}
+
+    class FakeMarkdown:
+        def update(self, value):
+            captured.setdefault('updates', []).append(value)
+
+    screen = AskScreen(
+        vector_store=object(),
+        provider_error='LLM provider executable is not configured.',
+    )
+    screen.query_one = lambda *_args, **_kwargs: FakeMarkdown()
+
+    screen.on_input_submitted(SimpleNamespace(value='question'))
+
+    assert captured['updates'][-1] == (
+        '**Configuration error:** LLM provider executable is not configured.'
+    )

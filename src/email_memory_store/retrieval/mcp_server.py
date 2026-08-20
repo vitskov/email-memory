@@ -17,7 +17,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from ..promotion.llm import LLMProviderSpec
-from ..runtime import RUNTIME_CONFIG_ENV, load_runtime_config, resolve_runtime_settings
+from ..runtime import RUNTIME_CONFIG_ENV, RuntimeSettings, load_runtime_config, resolve_runtime_settings
 from .answerer import Answerer
 from .engine import EFFORT_LEVELS, RetrievalEngine
 from .filters import RetrievalFilters, parse_natural_date_range
@@ -59,6 +59,19 @@ def _provider_spec(args: dict[str, Any]) -> LLMProviderSpec | None:
     if not provider:
         return None
     return LLMProviderSpec(name=str(provider), model=args.get("model"))
+
+
+def _provider_spec_with_runtime(
+    args: dict[str, Any], runtime_settings: RuntimeSettings | None,
+) -> LLMProviderSpec:
+    spec = _provider_spec(args) or LLMProviderSpec()
+    if runtime_settings is None:
+        raise MCPConfigurationError("the LLM provider executable is not configured")
+    try:
+        executable = runtime_settings.executable_for_provider(spec.name)
+    except ValueError as error:
+        raise MCPConfigurationError("the LLM provider executable is not configured") from error
+    return spec.bind_executable(executable)
 
 
 def _search_tool() -> Tool:
@@ -131,12 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_runtime_root(
+def _resolve_runtime_attachment(
     *,
     root: str | Path | None,
     runtime_config: str | Path | None,
     environ: Mapping[str, str] | None = None,
-) -> Path:
+) -> RuntimeSettings:
     env = dict(os.environ if environ is None else environ)
     selected_config = runtime_config if runtime_config is not None else env.get(RUNTIME_CONFIG_ENV)
     if root is None and not selected_config:
@@ -163,7 +176,20 @@ def _resolve_runtime_root(
         )
     except (OSError, ValueError) as error:
         raise MCPConfigurationError("the runtime attachment could not be resolved") from error
-    return settings.runtime_root
+    return settings
+
+
+def _resolve_runtime_root(
+    *,
+    root: str | Path | None,
+    runtime_config: str | Path | None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    return _resolve_runtime_attachment(
+        root=root,
+        runtime_config=runtime_config,
+        environ=environ,
+    ).runtime_root
 
 
 def _is_initialized_chroma_store(chroma_path: Path) -> bool:
@@ -187,13 +213,13 @@ def _build_engine(
     root: str | Path | None,
     runtime_config: str | Path | None,
     environ: Mapping[str, str] | None = None,
+    runtime_settings: RuntimeSettings | None = None,
 ) -> RetrievalEngine:
-    runtime_root = _resolve_runtime_root(
-        root=root,
-        runtime_config=runtime_config,
-        environ=environ,
+    settings = runtime_settings or _resolve_runtime_attachment(
+        root=root, runtime_config=runtime_config, environ=environ,
     )
-    chroma_path = runtime_root / "chroma"
+    chroma_path = settings.vector_store
+    assert chroma_path is not None
     if not _is_initialized_chroma_store(chroma_path):
         raise MCPConfigurationError(
             "the configured runtime does not contain an initialized Chroma store"
@@ -236,10 +262,17 @@ def _do_search(engine: RetrievalEngine, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _do_ask(engine: RetrievalEngine, args: dict[str, Any]) -> dict[str, Any]:
+def _do_ask(
+    engine: RetrievalEngine,
+    args: dict[str, Any],
+    runtime_settings: RuntimeSettings | None = None,
+) -> dict[str, Any]:
     query = str(args["query"])
     filters = _build_filters(args, query)
-    answerer = Answerer(engine=engine, provider_spec=_provider_spec(args))
+    answerer = Answerer(
+        engine=engine,
+        provider_spec=_provider_spec_with_runtime(args, runtime_settings),
+    )
     result = answerer.answer(
         query,
         effort=args.get("effort", "medium"),
@@ -263,7 +296,9 @@ def _do_ask(engine: RetrievalEngine, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_server(*, engine: RetrievalEngine) -> Server:
+def build_server(
+    *, engine: RetrievalEngine, runtime_settings: RuntimeSettings | None = None,
+) -> Server:
     server = Server(SERVER_NAME)
 
     @server.list_tools()
@@ -275,7 +310,7 @@ def build_server(*, engine: RetrievalEngine) -> Server:
         if name == "search":
             payload = await asyncio.to_thread(_do_search, engine, arguments)
         elif name == "ask":
-            payload = await asyncio.to_thread(_do_ask, engine, arguments)
+            payload = await asyncio.to_thread(_do_ask, engine, arguments, runtime_settings)
         else:
             raise ValueError(f"unknown tool: {name}")
         return [TextContent(type="text", text=json.dumps(payload, indent=2, default=str))]
@@ -291,14 +326,19 @@ async def _run(server: Server) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     try:
-        engine = _build_engine(
+        runtime_settings = _resolve_runtime_attachment(
             root=args.root,
             runtime_config=args.runtime_config,
+        )
+        engine = _build_engine(
+            root=runtime_settings.runtime_root,
+            runtime_config=None,
+            runtime_settings=runtime_settings,
         )
     except MCPConfigurationError as error:
         print(f"{SERVER_NAME}: {error}", file=sys.stderr)
         raise SystemExit(2) from error
-    asyncio.run(_run(build_server(engine=engine)))
+    asyncio.run(_run(build_server(engine=engine, runtime_settings=runtime_settings)))
 
 
 if __name__ == "__main__":

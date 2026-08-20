@@ -1,7 +1,11 @@
+import argparse
+import json
+from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 
 import email_memory_store.cli as cli
+import pytest
 from email_memory_store.cli import build_parser
 
 
@@ -93,6 +97,192 @@ def test_cli_supports_runtime_config_option():
     assert args.work_root == '/work'
     assert args.fact_store_db == '/private/facts.db'
     assert args.runtime_config == '/private/runtime.toml'
+
+
+def test_runtime_doctor_redacts_paths(tmp_path, capsys):
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    main_db = tmp_path / "main.duckdb"
+    entity_db = tmp_path / "entity.duckdb"
+    vector_store = tmp_path / "vectors"
+    main_db.touch()
+    entity_db.touch()
+    vector_store.mkdir()
+
+    cli.cmd_runtime_doctor(argparse.Namespace(
+        root=str(runtime_root),
+        main_db=str(main_db),
+        entity_db=str(entity_db),
+        vector_store=str(vector_store),
+        work_db=None,
+        fact_store_db=None,
+        mail_client_executable=Path("/bin/true"),
+        hermes_executable=None,
+        codex_executable=None,
+        claude_executable=None,
+    ))
+
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["ok"] is True
+    assert payload["paths_redacted"] is True
+    assert str(tmp_path) not in output
+
+
+def test_runtime_doctor_exits_nonzero_for_missing_storage(tmp_path, capsys):
+    with pytest.raises(SystemExit) as error:
+        cli.cmd_runtime_doctor(argparse.Namespace(
+            root=str(tmp_path / "missing-runtime"),
+            main_db=str(tmp_path / "missing-main.duckdb"),
+            entity_db=str(tmp_path / "missing-entity.duckdb"),
+            vector_store=str(tmp_path / "missing-vectors"),
+            work_db=None,
+            fact_store_db=None,
+            mail_client_executable=None,
+            hermes_executable=None,
+            codex_executable=None,
+            claude_executable=None,
+        ))
+
+    assert error.value.code == 1
+    output = capsys.readouterr().out
+    assert str(tmp_path) not in output
+
+
+def test_runtime_doctor_redacts_a_missing_manifest(tmp_path, monkeypatch, capsys):
+    missing_manifest = tmp_path / "sensitive-location" / "runtime.toml"
+    monkeypatch.setattr(sys, "argv", [
+        "email-memory-store",
+        "--runtime-config",
+        str(missing_manifest),
+        "runtime-doctor",
+    ])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert error.value.code == 2
+    assert payload == {
+        "ok": False,
+        "error": "runtime manifest is unavailable or invalid",
+        "paths_redacted": True,
+    }
+    assert str(missing_manifest) not in captured.out
+    assert captured.err == ""
+
+
+def test_runtime_doctor_requires_the_persisted_selected_llm(tmp_path, capsys):
+    import duckdb
+
+    runtime_root = tmp_path / 'runtime'
+    runtime_root.mkdir()
+    main_db = tmp_path / 'main.duckdb'
+    connection = duckdb.connect(str(main_db))
+    connection.execute('CREATE TABLE metadata (key VARCHAR PRIMARY KEY, value VARCHAR)')
+    connection.execute(
+        "INSERT INTO metadata VALUES ('promotion_llm_config', ?)",
+        [json.dumps({'provider': {'name': 'codex-cli', 'model': 'test-model'}})],
+    )
+    connection.close()
+    entity_db = tmp_path / 'entity.duckdb'
+    entity_db.touch()
+    vector_store = tmp_path / 'vectors'
+    vector_store.mkdir()
+
+    cli.cmd_runtime_doctor(argparse.Namespace(
+        root=str(runtime_root),
+        main_db=str(main_db),
+        entity_db=str(entity_db),
+        vector_store=str(vector_store),
+        work_db=None,
+        fact_store_db=None,
+        mail_client_executable=None,
+        hermes_executable=None,
+        codex_executable=Path('/bin/true'),
+        claude_executable=None,
+        required_capabilities=['selected-llm'],
+    ))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['ok'] is True
+    assert payload['capabilities'] == {
+        'mail_required': False,
+        'mail_ready': False,
+        'selected_llm_required': True,
+        'selected_llm_config_readable': True,
+        'selected_llm_ready': True,
+    }
+
+
+def test_runtime_doctor_ignores_stale_unused_executable(tmp_path, capsys):
+    import duckdb
+
+    runtime_root = tmp_path / 'runtime'
+    runtime_root.mkdir()
+    main_db = tmp_path / 'main.duckdb'
+    connection = duckdb.connect(str(main_db))
+    connection.execute('CREATE TABLE metadata (key VARCHAR PRIMARY KEY, value VARCHAR)')
+    connection.execute(
+        "INSERT INTO metadata VALUES ('promotion_llm_config', ?)",
+        [json.dumps({'provider': {'name': 'hermes-default', 'model': 'test-model'}})],
+    )
+    connection.close()
+    entity_db = tmp_path / 'entity.duckdb'
+    entity_db.touch()
+    vector_store = tmp_path / 'vectors'
+    vector_store.mkdir()
+
+    cli.cmd_runtime_doctor(argparse.Namespace(
+        root=str(runtime_root),
+        main_db=str(main_db),
+        entity_db=str(entity_db),
+        vector_store=str(vector_store),
+        work_db=None,
+        fact_store_db=None,
+        mail_client_executable=None,
+        hermes_executable=Path('/bin/true'),
+        codex_executable=tmp_path / 'removed-codex',
+        claude_executable=None,
+        required_capabilities=['selected-llm'],
+    ))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['ok'] is True
+    assert payload['executables']['codex'] == {'configured': True, 'usable': False}
+    assert payload['capabilities']['selected_llm_ready'] is True
+
+
+def test_runtime_doctor_required_mail_fails_without_himalaya(tmp_path, capsys):
+    runtime_root = tmp_path / 'runtime'
+    runtime_root.mkdir()
+    main_db = tmp_path / 'main.duckdb'
+    entity_db = tmp_path / 'entity.duckdb'
+    main_db.touch()
+    entity_db.touch()
+    vector_store = tmp_path / 'vectors'
+    vector_store.mkdir()
+
+    with pytest.raises(SystemExit) as error:
+        cli.cmd_runtime_doctor(argparse.Namespace(
+            root=str(runtime_root),
+            main_db=str(main_db),
+            entity_db=str(entity_db),
+            vector_store=str(vector_store),
+            work_db=None,
+            fact_store_db=None,
+            mail_client_executable=None,
+            hermes_executable=None,
+            codex_executable=None,
+            claude_executable=None,
+            required_capabilities=['mail'],
+        ))
+
+    assert error.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['capabilities']['mail_required'] is True
+    assert payload['capabilities']['mail_ready'] is False
 
 
 def test_setup_private_imports_the_bootstrap_ui_only_when_invoked(monkeypatch):

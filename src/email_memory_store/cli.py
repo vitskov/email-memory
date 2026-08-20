@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 
@@ -270,6 +271,16 @@ def build_parser() -> argparse.ArgumentParser:
     setup_private_parser = subparsers.add_parser('setup-private')
     setup_private_parser.set_defaults(handler=cmd_setup_private)
 
+    runtime_doctor_parser = subparsers.add_parser('runtime-doctor')
+    runtime_doctor_parser.add_argument(
+        '--require',
+        action='append',
+        choices=('mail', 'selected-llm'),
+        default=[],
+        dest='required_capabilities',
+    )
+    runtime_doctor_parser.set_defaults(handler=cmd_runtime_doctor)
+
     browse_parser = subparsers.add_parser('browse')
     browse_parser.add_argument('--read-only', action='store_true', default=False)
     browse_parser.add_argument('--snapshot', action='store_true', default=False,
@@ -280,13 +291,51 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _open_store(args: argparse.Namespace) -> EmailMemoryStore:
-    store = EmailMemoryStore(args.root, work_root=args.work_root, use_work_db=args.use_work_db)
+    store = EmailMemoryStore(
+        args.root,
+        work_root=args.work_root,
+        use_work_db=args.use_work_db,
+        db_path=getattr(args, 'main_db', None),
+        entity_db_path=getattr(args, 'entity_db', None),
+        work_db_path=getattr(args, 'work_db', None),
+    )
     store.initialize(start_date=getattr(args, 'start_date', None))
     return store
 
 
-def _open_vector_store(root: str | Path) -> VectorStore:
-    return VectorStore(Path(root).expanduser() / 'chroma')
+def _open_vector_store(path: str | Path) -> VectorStore:
+    return VectorStore(Path(path).expanduser())
+
+
+def _vector_store_path(args: argparse.Namespace) -> Path:
+    configured = getattr(args, 'vector_store', None)
+    return Path(configured).expanduser() if configured else Path(args.root).expanduser() / 'chroma'
+
+
+def _mail_client(args: argparse.Namespace) -> HimalayaClient:
+    executable = getattr(args, 'mail_client_executable', None)
+    if executable is None:
+        raise ValueError('the mail client executable is not configured')
+    return HimalayaClient(binary=str(executable))
+
+
+def _runtime_llm_spec(args: argparse.Namespace, spec: LLMProviderSpec) -> LLMProviderSpec:
+    executable_by_provider = {
+        'hermes-default': getattr(args, 'hermes_executable', None),
+        'codex-cli': getattr(args, 'codex_executable', None),
+        'claude-code-cli': getattr(args, 'claude_executable', None),
+    }
+    executable = executable_by_provider.get(spec.name)
+    if executable is None:
+        raise ValueError('the selected LLM provider executable is not configured')
+    return spec.bind_executable(str(executable))
+
+
+def _runtime_llm_config(args: argparse.Namespace, store: EmailMemoryStore) -> PromotionLLMConfig:
+    config = PromotionLLMConfig.from_dict(store.get_promotion_llm_config())
+    spec = _runtime_llm_spec(args, config.provider)
+    assert spec.executable is not None
+    return config.bind_provider_executable(spec.executable)
 
 
 def _maybe_checkpoint(store: EmailMemoryStore, args: argparse.Namespace) -> None:
@@ -356,7 +405,7 @@ def cmd_init_db(args: argparse.Namespace) -> None:
 
 def cmd_ingest_folder(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     try:
         result = ingest_envelopes(
             store=store,
@@ -375,7 +424,7 @@ def cmd_ingest_folder(args: argparse.Namespace) -> None:
 
 def cmd_ingest_account(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     try:
         result = ingest_account_folders(
             store=store,
@@ -395,7 +444,7 @@ def cmd_ingest_account(args: argparse.Namespace) -> None:
 
 def cmd_ingest_bodies(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     try:
         result = ingest_message_bodies(
             store=store,
@@ -414,9 +463,9 @@ def cmd_ingest_bodies(args: argparse.Namespace) -> None:
 def cmd_initial_ingest(args: argparse.Namespace) -> None:
     store = _open_store(args)
     _pre_flight_index_repair(store)
-    client = HimalayaClient()
+    client = _mail_client(args)
     started_at = _utc_now_iso()
-    vector_store = _open_vector_store(args.root) if getattr(args, 'embed', False) else None
+    vector_store = _open_vector_store(_vector_store_path(args)) if getattr(args, 'embed', False) else None
     try:
         result = run_initial_ingestion(
             store=store,
@@ -444,9 +493,9 @@ def cmd_initial_ingest(args: argparse.Namespace) -> None:
 def cmd_nightly_update(args: argparse.Namespace) -> None:
     store = _open_store(args)
     _pre_flight_index_repair(store)
-    client = HimalayaClient()
+    client = _mail_client(args)
     started_at = _utc_now_iso()
-    vector_store = _open_vector_store(args.root) if getattr(args, 'embed', False) else None
+    vector_store = _open_vector_store(_vector_store_path(args)) if getattr(args, 'embed', False) else None
     try:
         result = run_nightly_update(
             store=store,
@@ -473,7 +522,7 @@ def cmd_nightly_update(args: argparse.Namespace) -> None:
 
 def cmd_backfill_rfc_metadata(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     started_at = _utc_now_iso()
     try:
         result = run_rfc_metadata_backfill(
@@ -499,7 +548,7 @@ def cmd_backfill_rfc_metadata(args: argparse.Namespace) -> None:
 
 def cmd_retry_failed_bodies(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     started_at = _utc_now_iso()
     try:
         result = run_failed_body_backfill(
@@ -585,7 +634,7 @@ def _pre_flight_index_repair(store: EmailMemoryStore) -> None:
 
 def cmd_repair_ingestion_state(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    client = HimalayaClient()
+    client = _mail_client(args)
     started_at = _utc_now_iso()
     try:
         result = run_ingestion_state_repair(
@@ -662,7 +711,7 @@ def cmd_search(args: argparse.Namespace) -> None:
             store.close()
         return
     filters = _build_retrieval_filters(args)
-    engine = RetrievalEngine(vector_store=_open_vector_store(args.root))
+    engine = RetrievalEngine(vector_store=_open_vector_store(_vector_store_path(args)))
     results = engine.search(args.query, effort=args.effort, limit=args.limit, filters=filters)
     payload = {
         'query': args.query,
@@ -694,9 +743,11 @@ def cmd_ask(args: argparse.Namespace) -> None:
     filters = _build_retrieval_filters(args)
     spec = None
     if args.provider:
-        spec = LLMProviderSpec(name=args.provider, model=args.model)
+        spec = _runtime_llm_spec(args, LLMProviderSpec(name=args.provider, model=args.model))
+    else:
+        spec = _runtime_llm_spec(args, LLMProviderSpec())
     answerer = Answerer(
-        engine=RetrievalEngine(vector_store=_open_vector_store(args.root)),
+        engine=RetrievalEngine(vector_store=_open_vector_store(_vector_store_path(args))),
         provider_spec=spec,
     )
     result = answerer.answer(
@@ -819,23 +870,32 @@ def cmd_plan_llm_promotions(args: argparse.Namespace) -> None:
     store = _open_store(args)
     try:
         service = EmailPromotionService(store)
-        print(json.dumps(service.build_llm_promotion_plan(limit=args.limit), indent=2, default=str))
+        print(json.dumps(service.build_llm_promotion_plan(
+            limit=args.limit,
+            config=_runtime_llm_config(args, store),
+        ), indent=2, default=str))
     finally:
         store.close()
 
 
 def cmd_run_llm_promotions(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    vector_store = _open_vector_store(args.root) if getattr(args, 'embed', False) else None
+    vector_store = _open_vector_store(_vector_store_path(args)) if getattr(args, 'embed', False) else None
     try:
         service = EmailPromotionService(store)
         result = service.execute_and_commit_llm_promotions(
             limit=args.limit,
+            config=_runtime_llm_config(args, store),
             holographic_db_path=getattr(args, 'fact_store_db', None),
         )
         _maybe_checkpoint(store, args)
         if getattr(args, 'embed', False):
-            result['embedded'] = embed_for_pipeline_event(store, event='promotion', vector_store=vector_store)
+            result['embedded'] = embed_for_pipeline_event(
+                store,
+                event='promotion',
+                vector_store=vector_store,
+                fact_store_db_path=getattr(args, 'fact_store_db', None),
+            )
         print(json.dumps(result, indent=2, default=str))
     except Exception:
         _maybe_checkpoint(store, args)
@@ -942,7 +1002,7 @@ def cmd_set_expiry_grace(args: argparse.Namespace) -> None:
 
 def cmd_cleanup_expired(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    vector_store = _open_vector_store(args.root)
+    vector_store = _open_vector_store(_vector_store_path(args))
     try:
         result = store.cleanup_expired_time_anchors(grace_days=args.grace_days, dry_run=not args.apply)
         # Expired rows are embedded retrieval sources; prune their vectors so
@@ -1117,7 +1177,7 @@ def cmd_pipeline_status(args: argparse.Namespace) -> None:
         payload['promotion'] = _build_promotion_health(store)
         payload['retrieval'] = _build_retrieval_health(
             store,
-            args.root,
+            _vector_store_path(args),
             getattr(args, 'fact_store_db', None),
         )
         payload['cleanup_expired'] = _build_cleanup_expired_health(store)
@@ -1127,11 +1187,11 @@ def cmd_pipeline_status(args: argparse.Namespace) -> None:
 
 def cmd_extract_threads(args: argparse.Namespace) -> None:
     store = _open_store(args)
-    vector_store = _open_vector_store(args.root) if getattr(args, 'embed', False) else None
+    vector_store = _open_vector_store(_vector_store_path(args)) if getattr(args, 'embed', False) else None
     try:
         raw_config = store.get_promotion_llm_config()
         llm_config = PromotionLLMConfig.from_dict(raw_config)
-        spec = llm_config.provider
+        spec = _runtime_llm_spec(args, llm_config.provider)
         service = ExtractionService(store)
         result = service.run_extraction(limit=args.limit, spec=spec)
         _maybe_checkpoint(store, args)
@@ -1148,7 +1208,7 @@ def cmd_embed_backfill(args: argparse.Namespace) -> None:
         counts = backfill_all(
             store=store,
             batch_size=args.batch_size,
-            vector_store=_open_vector_store(args.root),
+            vector_store=_open_vector_store(_vector_store_path(args)),
             fact_store_db_path=(
                 Path(args.fact_store_db) if getattr(args, 'fact_store_db', None) else None
             ),
@@ -1159,7 +1219,7 @@ def cmd_embed_backfill(args: argparse.Namespace) -> None:
 
 
 def cmd_embed_status(args: argparse.Namespace) -> None:
-    vector_store = _open_vector_store(args.root)
+    vector_store = _open_vector_store(_vector_store_path(args))
     counts = {name: vector_store.count(name) for name in COLLECTION_NAMES}
     print(json.dumps({'collections': counts, 'persist_path': str(vector_store._path)}, indent=2, default=str))
 
@@ -1171,33 +1231,179 @@ def cmd_setup_private(_args: argparse.Namespace) -> None:
     private_setup_main()
 
 
-def cmd_browse(args: argparse.Namespace) -> None:
-    import shutil, tempfile
-    snapshot_dir = None
-    root = args.root
-    if getattr(args, 'snapshot', False):
-        src = Path(args.root).expanduser()
-        snapshot_dir = tempfile.mkdtemp(prefix='ems_browse_')
-        dst = Path(snapshot_dir)
-        for f in list(src.glob('*.duckdb')) + list(src.glob('*.duckdb.wal')):
-            shutil.copy2(f, dst / f.name)
-        root = snapshot_dir
-        print(f'[browse] snapshot copied to {snapshot_dir}')
-    try:
-        store = EmailMemoryStore(
-            root,
-            work_root=args.work_root if not snapshot_dir else None,
-            use_work_db=args.use_work_db if not snapshot_dir else False,
-            read_only=True if snapshot_dir else getattr(args, 'read_only', False),
-        )
+def cmd_runtime_doctor(args: argparse.Namespace) -> None:
+    """Report runtime attachment health without printing configured paths."""
+    storage = {
+        'runtime_root': Path(args.root).is_dir(),
+        'main_db': Path(args.main_db).is_file(),
+        'entity_db': Path(args.entity_db).is_file(),
+        'vector_store': Path(args.vector_store).is_dir(),
+    }
+    if getattr(args, 'work_db', None):
+        storage['work_db'] = Path(args.work_db).is_file()
+    if getattr(args, 'fact_store_db', None):
+        storage['fact_store_db'] = Path(args.fact_store_db).is_file()
+
+    executables: dict[str, dict[str, bool]] = {}
+    for name, field in (
+        ('himalaya', 'mail_client_executable'),
+        ('hermes', 'hermes_executable'),
+        ('codex', 'codex_executable'),
+        ('claude', 'claude_executable'),
+    ):
+        configured = getattr(args, field, None)
+        path = Path(configured) if configured else None
+        executables[name] = {
+            'configured': path is not None,
+            'usable': bool(path and path.is_file() and os.access(path, os.X_OK)),
+        }
+    required = set(getattr(args, 'required_capabilities', []) or [])
+    selected_llm_config_readable = True
+    selected_provider = 'hermes-default'
+    if 'selected-llm' in required and Path(args.main_db).is_file():
         try:
-            from .tui import launch_browser
-            launch_browser(store, vector_store=_open_vector_store(args.root))
-        finally:
-            store.close()
+            import duckdb
+
+            connection = duckdb.connect(str(args.main_db), read_only=True)
+            try:
+                table_row = connection.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'metadata'"
+                ).fetchone()
+                table_exists = bool(table_row and table_row[0])
+                if table_exists:
+                    row = connection.execute(
+                        "SELECT value FROM metadata WHERE key = 'promotion_llm_config'"
+                    ).fetchone()
+                    if row:
+                        raw_config = json.loads(row[0])
+                        selected_provider = LLMProviderSpec.from_dict(
+                            (raw_config or {}).get('provider')
+                        ).name
+            finally:
+                connection.close()
+        except Exception:
+            selected_llm_config_readable = False
+    executable_name_by_provider = {
+        'hermes-default': 'hermes',
+        'codex-cli': 'codex',
+        'claude-code-cli': 'claude',
+    }
+    selected_executable_name = executable_name_by_provider.get(selected_provider)
+    selected_llm_ready = bool(
+        selected_llm_config_readable
+        and selected_executable_name
+        and executables[selected_executable_name]['usable']
+    )
+    capabilities = {
+        'mail_required': 'mail' in required,
+        'mail_ready': executables['himalaya']['usable'],
+        'selected_llm_required': 'selected-llm' in required,
+        'selected_llm_config_readable': selected_llm_config_readable,
+        'selected_llm_ready': selected_llm_ready,
+    }
+    payload = {
+        'schema': 'runtime-v2-or-compatible',
+        'storage': storage,
+        'executables': executables,
+        'capabilities': capabilities,
+        'paths_redacted': True,
+    }
+    payload['ok'] = all(storage.values())
+    if capabilities['mail_required']:
+        payload['ok'] = payload['ok'] and capabilities['mail_ready']
+    if capabilities['selected_llm_required']:
+        payload['ok'] = payload['ok'] and capabilities['selected_llm_ready']
+    print(json.dumps(payload, indent=2))
+    if not payload['ok']:
+        raise SystemExit(1)
+
+
+def _copy_database_snapshot(source: Path, destination: Path) -> None:
+    """Copy one configured database and its optional WAL under a stable snapshot name."""
+    import shutil
+
+    shutil.copy2(source, destination)
+    source_wal = Path(f"{source}.wal")
+    if source_wal.is_file():
+        shutil.copy2(source_wal, Path(f"{destination}.wal"))
+
+
+def _run_browser(
+    args: argparse.Namespace,
+    *,
+    root: str | Path,
+    main_db: Path,
+    entity_db: Path,
+    work_db: Path | None,
+    snapshot: bool,
+) -> None:
+    store = EmailMemoryStore(
+        root,
+        work_root=None if snapshot else args.work_root,
+        use_work_db=args.use_work_db,
+        read_only=True if snapshot else getattr(args, 'read_only', False),
+        db_path=main_db,
+        entity_db_path=entity_db,
+        work_db_path=work_db,
+    )
+    try:
+        from .tui import launch_browser
+        persisted = PromotionLLMConfig.from_dict(store.get_promotion_llm_config())
+        try:
+            provider_spec = _runtime_llm_spec(args, persisted.provider)
+            provider_error = None
+        except ValueError:
+            provider_spec = None
+            provider_error = 'LLM provider executable is not configured.'
+        launch_browser(
+            store,
+            vector_store=_open_vector_store(_vector_store_path(args)),
+            provider_spec=provider_spec,
+            provider_error=provider_error,
+        )
     finally:
-        if snapshot_dir:
-            shutil.rmtree(snapshot_dir, ignore_errors=True)
+        store.close()
+
+
+def cmd_browse(args: argparse.Namespace) -> None:
+    import tempfile
+
+    main_db = Path(getattr(args, 'main_db', None) or Path(args.root) / 'email_memory.duckdb')
+    entity_db = Path(
+        getattr(args, 'entity_db', None) or Path(args.root) / 'entity_memory.duckdb'
+    )
+    work_db_value = getattr(args, 'work_db', None)
+    work_db = Path(work_db_value) if work_db_value else None
+    if not getattr(args, 'snapshot', False):
+        _run_browser(
+            args,
+            root=args.root,
+            main_db=main_db,
+            entity_db=entity_db,
+            work_db=work_db,
+            snapshot=False,
+        )
+        return
+
+    with tempfile.TemporaryDirectory(prefix='ems_browse_') as snapshot_dir:
+        destination = Path(snapshot_dir)
+        snapshot_main_db = destination / 'main.duckdb'
+        snapshot_entity_db = destination / 'entity.duckdb'
+        _copy_database_snapshot(main_db, snapshot_main_db)
+        _copy_database_snapshot(entity_db, snapshot_entity_db)
+        snapshot_work_db = None
+        if args.use_work_db and work_db is not None:
+            snapshot_work_db = destination / 'work.duckdb'
+            _copy_database_snapshot(work_db, snapshot_work_db)
+        print(f'[browse] snapshot copied to {snapshot_dir}')
+        _run_browser(
+            args,
+            root=snapshot_dir,
+            main_db=snapshot_main_db,
+            entity_db=snapshot_entity_db,
+            work_db=snapshot_work_db,
+            snapshot=True,
+        )
 
 
 def cmd_extraction_status(args: argparse.Namespace) -> None:
@@ -1237,15 +1443,33 @@ def cmd_extraction_status(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    runtime = resolve_runtime_settings(
-        runtime_root=args.root,
-        work_root=args.work_root,
-        fact_store_db=args.fact_store_db,
-        runtime_config=args.runtime_config,
-    )
+    try:
+        runtime = resolve_runtime_settings(
+            runtime_root=args.root,
+            work_root=args.work_root,
+            fact_store_db=args.fact_store_db,
+            runtime_config=args.runtime_config,
+        )
+    except (OSError, RuntimeError, ValueError):
+        if args.command != 'runtime-doctor':
+            raise
+        print(json.dumps({
+            'ok': False,
+            'error': 'runtime manifest is unavailable or invalid',
+            'paths_redacted': True,
+        }, indent=2))
+        raise SystemExit(2) from None
     args.root = str(runtime.runtime_root)
     args.work_root = str(runtime.work_root) if runtime.work_root else None
     args.fact_store_db = str(runtime.fact_store_db) if runtime.fact_store_db else None
+    args.main_db = str(runtime.main_db)
+    args.entity_db = str(runtime.entity_db)
+    args.vector_store = str(runtime.vector_store)
+    args.work_db = str(runtime.work_db) if runtime.work_db else None
+    args.mail_client_executable = runtime.mail_client_executable
+    args.hermes_executable = runtime.hermes_executable
+    args.codex_executable = runtime.codex_executable
+    args.claude_executable = runtime.claude_executable
     args.handler(args)
 
 

@@ -23,7 +23,7 @@ The setup interface writes the following bundle under
 
 | File | Purpose |
 | --- | --- |
-| `runtime.toml` | Runtime locations and the optional named local runtime provider. |
+| `runtime.toml` | Authoritative runtime storage and executable locations. |
 | `private.env.json` | Private deployment references that must not enter the core configuration. |
 | `policy.json` | Local source-selection policy. |
 
@@ -42,20 +42,39 @@ deployment data.
 the MCP launcher. Its supported schema is:
 
 ```toml
-schema_version = 1
-runtime_root = "/absolute/path/to/durable-local-state"
-work_root = "/absolute/path/to/optional-local-work-state"
-fact_store_db = "/absolute/path/to/optional-local-fact-store.db"
+schema_version = 2
 
-[runtime_provider]
-name = "optional-installed-local-provider"
+[storage]
+runtime_root = "/absolute/path/to/durable-local-state"
+main_db = "/absolute/path/to/email-memory.duckdb"
+entity_db = "/absolute/path/to/entity-memory.duckdb"
+vector_store = "/absolute/path/to/vector-store"
+work_db = "/absolute/path/to/optional-work.duckdb"
+fact_store_db = "/absolute/path/to/optional-fact-store.db"
+
+[executables]
+himalaya = "/absolute/path/to/himalaya"
+hermes = "/absolute/path/to/hermes"
+codex = "/absolute/path/to/codex"
+claude = "/absolute/path/to/claude"
 ```
 
-`schema_version` and `runtime_root` are required; the current schema version is
-`1`. `work_root`, `fact_store_db`, and the `runtime_provider` table are
-optional. The setup interface requires absolute paths for every location it
-writes. The provider name is an explicit reference to a locally installed
-provider; providers are never discovered automatically.
+The current runtime schema is `2`. The four primary `storage` fields are
+required; `work_db`, `fact_store_db`, and every executable are optional. All
+supplied values must be absolute. Schema v2 deliberately rejects a
+`runtime_provider` table so that the selected manifest remains the single
+authoritative source of runtime paths.
+The setup interface suggests executable candidates using `PATH` only while the
+form is open, validates supplied candidates as executable files, and writes the
+selected path without resolving stable symlinks. Normal commands never search
+`PATH`: ingestion requires `executables.himalaya`, while each LLM capability
+requires the executable for its selected provider. DB-only commands and MCP
+`search` do not require an executable.
+
+Unversioned and schema-v1 flat manifests, including their legacy named runtime
+provider references, remain readable for compatibility. They are not written
+by the setup command and do not gain implicit executable discovery; regenerate
+them as v2 before using mail or LLM capabilities.
 
 The launcher that starts the CLI or MCP server owns the manifest path. The
 public process resolves the selected attachment once at startup instead of
@@ -165,19 +184,43 @@ Each setting resolves in this order:
 1. The corresponding command-line option: `--root`, `--work-root`, or
    `--fact-store-db`.
 2. The matching field in the selected `runtime.toml`.
-3. The matching field returned by the explicitly named local runtime provider.
+3. For legacy unversioned or schema-v1 manifests only, the matching field
+   returned by their explicitly named local runtime provider.
 4. For `runtime_root` only, the generic XDG state default.
 
-The manifest selection itself resolves `--runtime-config` before
+For a schema-v2 manifest, the exact `main_db`, `entity_db`, `vector_store`, and
+optional `work_db` paths are authoritative; they need not be children of
+`runtime_root`. Explicit legacy root options derive legacy child paths and take
+precedence when supplied. The manifest selection itself resolves
+`--runtime-config` before
 `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`. There is no default for `work_root` or
 `fact_store_db`.
 
 The MCP launcher uses the same field precedence at process start but does not
 use the CLI's XDG runtime fallback. It requires `--root`, `--runtime-config`, or
 `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`. It fails before stdio opens if the
-attachment is missing or invalid, or if `<runtime_root>/chroma` is not an
+attachment is missing or invalid, or if `storage.vector_store` is not an
 existing initialized store with indexed application data. MCP never creates a
 replacement index at startup.
+
+Use `email-memory-store --runtime-config /path/to/runtime.toml runtime-doctor`
+for a redacted, automation-friendly check. It prints only boolean health and
+configuration state, never configured paths, and exits nonzero when required
+storage is absent. Unusable optional executables are reported but do not fail
+the default DB-only check.
+
+Capability-specific preflight checks are explicit and repeatable:
+
+```bash
+email-memory-store --runtime-config /path/to/runtime.toml runtime-doctor \
+  --require mail --require selected-llm
+```
+
+`mail` requires a usable configured Himalaya executable. `selected-llm` reads
+the persisted provider selection from the main database without modifying it
+(defaulting to Hermes when no selection exists) and requires that provider's
+configured executable. Doctor output remains boolean-only and exits nonzero
+when a requested capability is unavailable.
 
 ## Regeneration
 

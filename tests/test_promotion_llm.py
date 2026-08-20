@@ -23,22 +23,48 @@ def test_promotion_provider_spec_round_trips():
     assert restored == spec
 
 
+def test_promotion_provider_spec_does_not_serialize_runtime_executable():
+    spec = LLMProviderSpec(
+        name='hermes-default', model=None, executable='/opt/bin/hermes-current',
+    )
+    assert spec.to_dict() == {'name': 'hermes-default', 'model': None}
+
+
+def test_persisted_provider_config_cannot_inject_an_executable():
+    spec = LLMProviderSpec.from_dict({
+        'name': 'codex-cli',
+        'model': 'test-model',
+        'executable': '/untrusted/command',
+    })
+
+    assert spec.executable is None
+    bound = spec.bind_executable('/trusted/runtime-command')
+    assert bound.executable == '/trusted/runtime-command'
+    assert bound.to_dict() == {'name': 'codex-cli', 'model': 'test-model'}
+
+
 def test_hermes_default_provider_allows_missing_model():
-    provider = create_provider(LLMProviderSpec(name='hermes-default', model=None))
+    provider = create_provider(LLMProviderSpec(
+        name='hermes-default', model=None, executable='/opt/bin/hermes-current',
+    ))
     assert provider.spec.name == 'hermes-default'
     assert provider.spec.model is None
 
 
 def test_hermes_default_provider_builds_noninteractive_quiet_command():
-    provider = create_provider(LLMProviderSpec(name='hermes-default', model=None))
+    provider = create_provider(LLMProviderSpec(
+        name='hermes-default', model=None, executable='/opt/bin/hermes-current',
+    ))
     command = provider.build_command('PROMPT')
-    assert command == ['hermes', 'chat', '-Q', '-q', 'PROMPT']
+    assert command == ['/opt/bin/hermes-current', 'chat', '-Q', '-q', 'PROMPT']
 
 
 def test_hermes_default_provider_includes_explicit_model_when_present():
-    provider = create_provider(LLMProviderSpec(name='hermes-default', model='nous/hermes-test'))
+    provider = create_provider(LLMProviderSpec(
+        name='hermes-default', model='nous/hermes-test', executable='/opt/bin/hermes-current',
+    ))
     command = provider.build_command('PROMPT')
-    assert command == ['hermes', 'chat', '-Q', '-m', 'nous/hermes-test', '-q', 'PROMPT']
+    assert command == ['/opt/bin/hermes-current', 'chat', '-Q', '-m', 'nous/hermes-test', '-q', 'PROMPT']
 
 
 def test_codex_cli_provider_requires_explicit_model():
@@ -215,27 +241,33 @@ def test_render_batch_prompt_includes_rulebook_concepts_and_candidates():
 
 
 def test_codex_cli_provider_builds_expected_command():
-    provider = create_provider(LLMProviderSpec(name='codex-cli', model='gpt-5-codex'))
+    provider = create_provider(LLMProviderSpec(
+        name='codex-cli', model='gpt-5-codex', executable='/opt/bin/codex-current',
+    ))
     command = provider.build_command('PROMPT')
-    assert command[:4] == ['codex', 'exec', '--model', 'gpt-5-codex']
+    assert command[:4] == ['/opt/bin/codex-current', 'exec', '--model', 'gpt-5-codex']
     assert command[-1] == 'PROMPT'
 
 
 def test_claude_code_provider_builds_expected_command():
-    provider = create_provider(LLMProviderSpec(name='claude-code-cli', model='sonnet'))
+    provider = create_provider(LLMProviderSpec(
+        name='claude-code-cli', model='sonnet', executable='/opt/bin/claude-current',
+    ))
     command = provider.build_command('PROMPT')
-    assert command[:3] == ['claude', '--model', 'sonnet']
+    assert command[:3] == ['/opt/bin/claude-current', '--model', 'sonnet']
     assert command[-1] == 'PROMPT'
 
 
 def test_codex_cli_provider_executes_and_parses_json(monkeypatch):
-    provider = create_provider(LLMProviderSpec(name='codex-cli', model='gpt-5-codex'))
+    provider = create_provider(LLMProviderSpec(
+        name='codex-cli', model='gpt-5-codex', executable='/opt/bin/codex-current',
+    ))
 
     class Result:
         stdout = '{"results":[{"source_object_id":"1","action":"promote","memory_text":"Durable memory","rationale":"Important"}]}'
 
     def fake_run(command, text, capture_output, check):
-        assert command[:2] == ['codex', 'exec']
+        assert command[:2] == ['/opt/bin/codex-current', 'exec']
         return Result()
 
     monkeypatch.setattr('subprocess.run', fake_run)
@@ -245,13 +277,15 @@ def test_codex_cli_provider_executes_and_parses_json(monkeypatch):
 
 
 def test_hermes_default_provider_executes_and_extracts_json_from_hermes_output(monkeypatch):
-    provider = create_provider(LLMProviderSpec(name='hermes-default', model=None))
+    provider = create_provider(LLMProviderSpec(
+        name='hermes-default', model=None, executable='/opt/bin/hermes-current',
+    ))
 
     class Result:
         stdout = '╭─ ⚕ Hermes ─────────────────────────\n{"results":[{"source_object_id":"1","action":"promote","memory_text":"Durable memory","rationale":"Important"}]}\n\nsession_id: 20260405_213501_2ebfb4\n'
 
     def fake_run(command, text, capture_output, check):
-        assert command == ['hermes', 'chat', '-Q', '-q', 'PROMPT']
+        assert command == ['/opt/bin/hermes-current', 'chat', '-Q', '-q', 'PROMPT']
         return Result()
 
     monkeypatch.setattr('subprocess.run', fake_run)
@@ -269,7 +303,9 @@ def test_hermes_default_provider_executes_and_extracts_json_from_hermes_output(m
 
 
 def test_provider_rejects_payload_without_top_level_results(monkeypatch):
-    provider = create_provider(LLMProviderSpec(name='hermes-default', model=None))
+    provider = create_provider(LLMProviderSpec(
+        name='hermes-default', model=None, executable='/opt/bin/hermes-current',
+    ))
 
     class Result:
         stdout = '{"ok": true}'

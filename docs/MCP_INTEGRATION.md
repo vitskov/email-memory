@@ -86,7 +86,9 @@ commands need one of these separately installed command-line providers:
 When an `ask` call omits `provider`, `hermes-default` is selected. An MCP host
 that uses only `search` does not need any LLM provider. Provider installation,
 authentication, model access, and process policy are external to this package
-and should be configured according to the chosen provider's documentation.
+and should be configured according to the chosen provider's documentation. MCP
+uses only the provider's absolute executable path from `runtime.toml`; it never
+falls back to command-name lookup on `PATH`.
 
 ## Startup and failure behavior
 
@@ -95,7 +97,8 @@ Before opening stdio, the launcher resolves the runtime once and validates that:
 - an explicit `--root`, `--runtime-config`, or
   `EMAIL_MEMORY_STORE_RUNTIME_CONFIG` selection exists;
 - the manifest is readable and valid when selected;
-- `<runtime-root>/chroma` is an initialized, non-symlinked Chroma store; and
+- the exact configured `storage.vector_store` is an initialized, non-symlinked
+  Chroma store; and
 - at least one supported collection contains indexed data.
 
 Failure exits with status `2` and a redacted configuration message. Repair the

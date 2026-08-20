@@ -36,7 +36,7 @@ The local runtime is selected explicitly at process start. It contains:
 - raw message artifacts, cache files, reports, and vector indexes
 - locally seeded or customized promotion assets
 - optional transient working database location
-- the vector store at `<runtime_root>/chroma`
+- exact main, entity, optional work, fact-store, and vector-store locations
 
 Separate local deployment configuration manages connector credentials, connection
 profiles, scheduling, notifications, and any external fact-store integration.
@@ -53,14 +53,17 @@ order:
 3. `EMAIL_MEMORY_STORE_RUNTIME_CONFIG` pointing to that manifest
 4. the generic XDG state default for `runtime_root`
 
-The manifest can supply `runtime_root`, `work_root`, `fact_store_db`, and an
-optional `runtime_provider` table. It is a location selector, not a credential
-store. See [Configuration](CONFIGURATION.md).
+The schema-v2 manifest supplies an authoritative `[storage]` table with exact
+main database, entity database, vector store, and optional work/fact-store
+paths. Its optional `[executables]` table selects absolute mail and LLM command
+paths. Executable discovery is confined to the setup UI; capability invocation
+fails closed when its selected executable is absent. The manifest remains a
+location selector, not a credential store. See [Configuration](CONFIGURATION.md).
 
 The MCP launcher uses the same resolver and field precedence after an
 attachment is selected, but it deliberately has no XDG fallback. It requires
 `--root`, `--runtime-config`, or `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`, validates
-the existing `<runtime_root>/chroma` store contains indexed application data,
+the exact configured vector store contains indexed application data,
 and constructs one retrieval engine before opening stdio. This makes a wrong
 deployment attachment a visible startup failure instead of an apparently
 healthy empty service.

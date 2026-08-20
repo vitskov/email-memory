@@ -26,7 +26,7 @@ _embedder_module.Embedder = _StubDefaultDependency
 _embedder_module.get_default_embedder = _unexpected_default_dependency
 sys.modules["email_memory_store.retrieval.embedder"] = _embedder_module
 
-from email_memory_store.retrieval import embed_backfill
+from email_memory_store.retrieval import embed_backfill, incremental
 from email_memory_store.retrieval.embed_backfill import (
     _reconcile_deletions,
     backfill_action_items,
@@ -277,3 +277,26 @@ def test_backfill_all_forwards_the_explicit_fact_store_path(monkeypatch, tmp_pat
     assert captured["hologr_db_path"] == fact_store_db
     assert captured["vector_store"] is vector_store
     assert captured["embedder"] is embedder
+
+
+def test_promotion_event_forwards_the_explicit_fact_store_path(monkeypatch, tmp_path):
+    fact_store_db = tmp_path / "facts.db"
+    captured: dict[str, object] = {}
+
+    def fake_backfill_holographic_facts(**kwargs):
+        captured.update(kwargs)
+        return 4
+
+    monkeypatch.setattr(
+        incremental, "backfill_holographic_facts", fake_backfill_holographic_facts,
+    )
+    result = embed_for_pipeline_event(
+        object(),
+        event="promotion",
+        vector_store=object(),
+        embedder=object(),
+        fact_store_db_path=fact_store_db,
+    )
+
+    assert result == {"holographic_facts": 4}
+    assert captured["hologr_db_path"] == fact_store_db

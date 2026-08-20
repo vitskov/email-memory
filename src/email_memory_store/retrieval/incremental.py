@@ -7,6 +7,7 @@ embeds rows whose IDs are not already present in the vector store.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .embed_backfill import (
@@ -72,11 +73,15 @@ def embed_after_promotion(
     vector_store: VectorStore | None = None,
     embedder: Embedder | None = None,
     batch_size: int = 64,
+    fact_store_db_path: str | Path | None = None,
 ) -> int:
     vs = vector_store if vector_store is not None else get_default_store()
     em = embedder if embedder is not None else get_default_embedder()
     return backfill_holographic_facts(
-        batch_size=batch_size, vector_store=vs, embedder=em
+        batch_size=batch_size,
+        hologr_db_path=Path(fact_store_db_path).expanduser() if fact_store_db_path else None,
+        vector_store=vs,
+        embedder=em,
     )
 
 
@@ -87,6 +92,7 @@ def embed_for_pipeline_event(
     vector_store: VectorStore | None = None,
     embedder: Embedder | None = None,
     batch_size: int = 64,
+    fact_store_db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if event == "ingestion":
         return embed_after_ingestion(
@@ -98,6 +104,9 @@ def embed_for_pipeline_event(
         )
     if event == "promotion":
         return {"holographic_facts": embed_after_promotion(
-            vector_store=vector_store, embedder=embedder, batch_size=batch_size
+            vector_store=vector_store,
+            embedder=embedder,
+            batch_size=batch_size,
+            fact_store_db_path=fact_store_db_path,
         )}
     raise ValueError(f"unknown pipeline event: {event!r}")

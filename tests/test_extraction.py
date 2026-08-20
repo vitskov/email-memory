@@ -420,7 +420,7 @@ def test_run_extraction_with_empty_result(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _stub_cli_retrieval_dependencies() -> None:
+def _stub_cli_retrieval_dependencies(monkeypatch) -> None:
     answerer_module = types.ModuleType("email_memory_store.retrieval.answerer")
     embedder_module = types.ModuleType("email_memory_store.retrieval.embedder")
     vector_store_module = types.ModuleType("email_memory_store.retrieval.vector_store")
@@ -445,16 +445,16 @@ def _stub_cli_retrieval_dependencies() -> None:
     vector_store_module.VectorStore = _StubDefaultDependency
     vector_store_module.get_default_store = _unexpected_default_dependency
 
-    sys.modules.pop("email_memory_store.cli", None)
-    sys.modules["email_memory_store.retrieval.answerer"] = answerer_module
-    sys.modules["email_memory_store.retrieval.embedder"] = embedder_module
-    sys.modules["email_memory_store.retrieval.vector_store"] = vector_store_module
+    monkeypatch.delitem(sys.modules, "email_memory_store.cli", raising=False)
+    monkeypatch.setitem(sys.modules, "email_memory_store.retrieval.answerer", answerer_module)
+    monkeypatch.setitem(sys.modules, "email_memory_store.retrieval.embedder", embedder_module)
+    monkeypatch.setitem(sys.modules, "email_memory_store.retrieval.vector_store", vector_store_module)
 
 
 
 
 def test_cli_extract_threads_uses_persisted_promotion_llm_config(tmp_path, monkeypatch):
-    _stub_cli_retrieval_dependencies()
+    _stub_cli_retrieval_dependencies(monkeypatch)
     from email_memory_store import cli
 
     root = tmp_path / 'email_memory'
@@ -486,6 +486,7 @@ def test_cli_extract_threads_uses_persisted_promotion_llm_config(tmp_path, monke
 
     parser = cli.build_parser()
     args = parser.parse_args(['--root', str(root), 'extract-threads', '--limit', '5'])
+    args.codex_executable = '/opt/bin/codex-current'
     cli.cmd_extract_threads(args)
 
     assert captured['limit'] == 5
@@ -493,10 +494,11 @@ def test_cli_extract_threads_uses_persisted_promotion_llm_config(tmp_path, monke
     assert isinstance(spec, LLMProviderSpec)
     assert spec.name == 'codex-cli'
     assert spec.model == 'gpt-5-codex'
+    assert spec.executable == '/opt/bin/codex-current'
 
 
-def test_cli_extract_threads_command(tmp_path):
-    _stub_cli_retrieval_dependencies()
+def test_cli_extract_threads_command(tmp_path, monkeypatch):
+    _stub_cli_retrieval_dependencies(monkeypatch)
     from email_memory_store.cli import build_parser
 
     store = _make_store(tmp_path)

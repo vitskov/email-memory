@@ -67,8 +67,18 @@ class EmailMemoryStore:
         work_root: str | Path | None = None,
         use_work_db: bool = False,
         read_only: bool = False,
+        *,
+        db_path: str | Path | None = None,
+        entity_db_path: str | Path | None = None,
+        work_db_path: str | Path | None = None,
     ):
-        self.paths = EmailMemoryPaths.from_root(root, work_root=work_root)
+        self.paths = EmailMemoryPaths.from_root(
+            root,
+            work_root=work_root,
+            db_path=db_path,
+            entity_db_path=entity_db_path,
+            work_db_path=work_db_path,
+        )
         self.paths.ensure_dirs()
         chosen_db = self.paths.work_db_path if use_work_db and self.paths.work_db_path else self.paths.db_path
         self._conn = duckdb.connect(str(chosen_db), read_only=read_only)
