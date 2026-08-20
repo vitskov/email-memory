@@ -191,3 +191,25 @@ owner-only permission checks.
 Regeneration does not copy private values into the repository and does not
 modify runtime databases. Back up the bundle with local confidential-data
 procedures, not through a public source-control remote.
+
+## Operational Artifacts
+
+Generated reports are private runtime data. The public package provides
+`email_memory_store.operational_artifacts` as the standard boundary for local
+launchers that persist operational state. It creates directories with mode
+`0700`, files with mode `0600`, refuses symbolic-link paths and non-regular
+artifacts, rejects files owned by another user or with multiple hard links,
+and supports atomic private writes and age-based pruning.
+
+Its structured JSONL event format accepts only bounded event, run, stage,
+severity, numeric, and boolean fields. It deliberately has no free-text field
+for message content, addresses, account or folder labels, destinations,
+exceptions, credentials, or filesystem paths. A local notification adapter
+should resolve its destination only when sending and render validated events
+into an ephemeral private file.
+
+Some explicit exports, including promotion batches, contain application data
+by design. Their writer uses the same atomic owner-only file boundary, but the
+local operator remains responsible for selecting a private runtime location
+and an appropriate retention period. Generated artifacts must never be written
+inside the Git checkout.

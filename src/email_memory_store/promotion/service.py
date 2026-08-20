@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from ..holographic import HolographicMemoryWriter
+from ..operational_artifacts import write_private_text
 from ..store import EmailMemoryStore
 from .llm import BatchPlanner, PromotionLLMConfig, create_provider, load_soul_text, render_batch_prompt
 
@@ -394,8 +395,11 @@ class EmailPromotionService:
         batch = {'batch_id': batch_id, 'items': items}
         if output_path is not None:
             path = Path(output_path).expanduser()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(batch, indent=2, sort_keys=True), encoding='utf-8')
+            write_private_text(
+                path,
+                json.dumps(batch, indent=2, sort_keys=True) + '\n',
+                repair_parent_permissions=True,
+            )
         return batch
 
     def record_promotions(self, items: list[dict[str, Any]]) -> None:
