@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import tempfile
 import tomllib
@@ -19,6 +20,8 @@ from typing import Any, Mapping
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Button, Checkbox, Footer, Input, Label, Static
+
+from ..runtime import RUNTIME_MANIFEST_SCHEMA_VERSION
 
 
 CONFIG_DIRECTORY_NAME = "email-memory-store"
@@ -49,9 +52,16 @@ class PrivateSetupValues:
     runtime_root: str
     work_root: str = ""
     fact_store_db: str = ""
+    main_db: str = ""
+    entity_db: str = ""
+    vector_store: str = ""
+    work_db: str = ""
+    himalaya_executable: str = ""
+    hermes_executable: str = ""
+    codex_executable: str = ""
+    claude_executable: str = ""
     fact_store_module_root: str = ""
     fact_store_provider: str = ""
-    runtime_provider: str = ""
     account_label: str = ""
     account_email: str = ""
     include_folders: str = ""
@@ -113,6 +123,16 @@ def _optional_text(value: str, *, field: str) -> str | None:
     return text or None
 
 
+def _optional_executable(value: str, *, field: str) -> str | None:
+    rendered = _optional_path(value, field=field)
+    if rendered is None:
+        return None
+    path = Path(rendered)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError(f"{field} must be a regular executable file")
+    return rendered
+
+
 def parse_folders(value: str) -> list[str]:
     """Parse a comma-separated selection without exposing it outside the caller."""
     folders = [item.strip() for item in value.split(",") if item.strip()]
@@ -156,6 +176,41 @@ def _retention_from_values(values: PrivateSetupValues) -> dict[str, object] | No
     return retention or None
 
 
+def _effective_runtime_storage(values: PrivateSetupValues) -> dict[str, str]:
+    """Render effective storage values without normalizing their persisted spelling."""
+    runtime_root = Path(_optional_path(values.runtime_root, field="runtime root") or "")
+    storage = {
+        "runtime_root": str(runtime_root),
+        "main_db": _optional_path(values.main_db, field="main database") or str(runtime_root / "email_memory.duckdb"),
+        "entity_db": _optional_path(values.entity_db, field="entity database") or str(runtime_root / "entity_memory.duckdb"),
+        "vector_store": _optional_path(values.vector_store, field="vector store") or str(runtime_root / "chroma"),
+    }
+    work_db = _optional_path(values.work_db, field="work database")
+    if work_db is None:
+        work_root = _optional_path(values.work_root, field="work root")
+        work_db = str(Path(work_root) / "email_memory.work.duckdb") if work_root else None
+    if work_db is not None:
+        storage["work_db"] = work_db
+    fact_store_db = _optional_path(values.fact_store_db, field="fact-store database")
+    if fact_store_db is not None:
+        storage["fact_store_db"] = fact_store_db
+    return storage
+
+
+def _validate_distinct_database_paths(storage: Mapping[str, str]) -> None:
+    owners: dict[Path, str] = {}
+    for field in ("main_db", "entity_db", "work_db", "fact_store_db"):
+        value = storage.get(field)
+        if value is None:
+            continue
+        normalized = Path(value).resolve(strict=False)
+        if normalized in owners:
+            raise ValueError(
+                f"runtime database paths for {owners[normalized]} and {field} must be distinct"
+            )
+        owners[normalized] = field
+
+
 def validate_private_setup(values: PrivateSetupValues) -> None:
     """Validate portable local configuration values before writing artifacts."""
     if _optional_path(values.runtime_root, field="runtime root") is None:
@@ -168,30 +223,47 @@ def validate_private_setup(values: PrivateSetupValues) -> None:
 
     _optional_path(values.work_root, field="work root")
     _optional_path(values.fact_store_db, field="fact-store database")
+    for field, label in (
+        ("main_db", "main database"),
+        ("entity_db", "entity database"),
+        ("vector_store", "vector store"),
+        ("work_db", "work database"),
+    ):
+        _optional_path(getattr(values, field), field=label)
+    for field, label in (
+        ("himalaya_executable", "Himalaya executable"),
+        ("hermes_executable", "Hermes executable"),
+        ("codex_executable", "Codex executable"),
+        ("claude_executable", "Claude executable"),
+    ):
+        _optional_executable(getattr(values, field), field=label)
     _optional_path(values.fact_store_module_root, field="fact-store module root")
     _optional_text(values.fact_store_provider, field="fact-store provider")
-    _optional_text(values.runtime_provider, field="runtime provider")
     _optional_text(values.alert_destination, field="alert destination")
     _optional_text(values.credential_reference, field="credential reference")
     parse_folders(values.include_folders)
     parse_folders(values.exclude_folders)
     _retention_from_values(values)
+    _validate_distinct_database_paths(_effective_runtime_storage(values))
 
 
 def render_runtime_manifest(values: PrivateSetupValues) -> str:
     """Render the public runtime contract without private policy values."""
     validate_private_setup(values)
-    lines = [
-        f"schema_version = {PRIVATE_SETUP_SCHEMA_VERSION}",
-        f"runtime_root = {json.dumps(_optional_path(values.runtime_root, field='runtime root'))}",
-    ]
-    for field, key in (("work_root", "work root"), ("fact_store_db", "fact-store database")):
-        rendered = _optional_path(getattr(values, field), field=key)
-        if rendered is not None:
-            lines.append(f"{field} = {json.dumps(rendered)}")
-    provider = _optional_text(values.runtime_provider, field="runtime provider")
-    if provider is not None:
-        lines.extend(("", "[runtime_provider]", f"name = {json.dumps(provider)}"))
+    storage = _effective_runtime_storage(values)
+
+    lines = [f"schema_version = {RUNTIME_MANIFEST_SCHEMA_VERSION}", "", "[storage]"]
+    lines.extend(f"{key} = {json.dumps(value)}" for key, value in storage.items())
+    lines.extend(("", "[executables]"))
+    for key, field, label in (
+        ("himalaya", "himalaya_executable", "Himalaya executable"),
+        ("hermes", "hermes_executable", "Hermes executable"),
+        ("codex", "codex_executable", "Codex executable"),
+        ("claude", "claude_executable", "Claude executable"),
+    ):
+        executable = _optional_executable(getattr(values, field), field=label)
+        if executable is not None:
+            lines.append(f"{key} = {json.dumps(executable)}")
     return "\n".join(lines) + "\n"
 
 
@@ -337,21 +409,43 @@ def _load_runtime_artifact(path: Path) -> Mapping[str, Any]:
         raise ValueError("cannot read runtime manifest") from error
     if not isinstance(value, dict):
         raise ValueError("runtime manifest must contain a TOML table")
-    _require_schema_version(value, artifact="runtime manifest")
+    if value.get("schema_version") != RUNTIME_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            f"runtime manifest must declare schema_version = {RUNTIME_MANIFEST_SCHEMA_VERSION}"
+        )
     _require_exact_keys(
         value,
         artifact="runtime manifest",
-        required={"schema_version", "runtime_root"},
-        optional={"work_root", "fact_store_db", "runtime_provider"},
+        required={"schema_version", "storage", "executables"},
+        optional=set(),
     )
-    for key in ("runtime_root", "work_root", "fact_store_db"):
-        if key in value:
-            _validate_string(value[key], artifact="runtime manifest", key=key)
-    if "runtime_provider" in value:
-        provider = value["runtime_provider"]
-        if not isinstance(provider, dict) or set(provider) != {"name"}:
-            raise ValueError("runtime manifest.runtime_provider must contain only name")
-        _validate_string(provider["name"], artifact="runtime manifest", key="runtime_provider.name")
+    storage = value["storage"]
+    if not isinstance(storage, dict):
+        raise ValueError("runtime manifest.storage must be a table")
+    _require_exact_keys(
+        storage,
+        artifact="runtime manifest.storage",
+        required={"runtime_root", "main_db", "entity_db", "vector_store"},
+        optional={"work_db", "fact_store_db"},
+    )
+    for key, item in storage.items():
+        _validate_string(item, artifact="runtime manifest.storage", key=key)
+        if not Path(item).expanduser().is_absolute():
+            raise ValueError(f"runtime manifest.storage.{key} must be an absolute path")
+    _validate_distinct_database_paths({key: str(item) for key, item in storage.items()})
+    executables = value["executables"]
+    if not isinstance(executables, dict):
+        raise ValueError("runtime manifest.executables must be a table")
+    _require_exact_keys(
+        executables,
+        artifact="runtime manifest.executables",
+        required=set(),
+        optional={"himalaya", "hermes", "codex", "claude"},
+    )
+    for key, item in executables.items():
+        _validate_string(item, artifact="runtime manifest.executables", key=key)
+        if not Path(item).expanduser().is_absolute():
+            raise ValueError(f"runtime manifest.executables.{key} must be an absolute path")
     return value
 
 
@@ -460,6 +554,7 @@ def write_private_setup(
     }
     for path, content in content_by_path.items():
         _write_owner_only(path, content, overwrite=overwrite)
+    load_private_setup(config_home=config_home, environ=environ)
     return paths
 
 
@@ -481,12 +576,42 @@ class PrivateSetupApp(App[None]):
             yield Input(placeholder="Optional absolute local path", id="work-root")
             yield Label("Fact-store database")
             yield Input(placeholder="Optional absolute local path", id="fact-store-db")
+            yield Label("Main database")
+            yield Input(placeholder="Defaults under runtime root", id="main-db")
+            yield Label("Entity database")
+            yield Input(placeholder="Defaults under runtime root", id="entity-db")
+            yield Label("Vector store")
+            yield Input(placeholder="Defaults under runtime root", id="vector-store")
+            yield Label("Work database")
+            yield Input(placeholder="Optional absolute local path", id="work-db")
+            yield Label("Himalaya executable")
+            yield Input(
+                value=shutil.which("himalaya") or "",
+                placeholder="Optional absolute executable path",
+                id="himalaya-executable",
+            )
+            yield Label("Hermes executable")
+            yield Input(
+                value=shutil.which("hermes") or "",
+                placeholder="Optional absolute executable path",
+                id="hermes-executable",
+            )
+            yield Label("Codex executable")
+            yield Input(
+                value=shutil.which("codex") or "",
+                placeholder="Optional absolute executable path",
+                id="codex-executable",
+            )
+            yield Label("Claude executable")
+            yield Input(
+                value=shutil.which("claude") or "",
+                placeholder="Optional absolute executable path",
+                id="claude-executable",
+            )
             yield Label("Fact-store module root")
             yield Input(placeholder="Optional absolute local path", id="fact-store-module-root")
             yield Label("Fact-store provider reference")
             yield Input(placeholder="Optional local provider reference", id="fact-store-provider")
-            yield Label("Runtime provider reference")
-            yield Input(placeholder="Optional installed provider name", id="runtime-provider")
             yield Label("Account label")
             yield Input(placeholder="Required local label", id="account-label")
             yield Label("Account email")
@@ -532,9 +657,16 @@ class PrivateSetupApp(App[None]):
             runtime_root=value("runtime-root"),
             work_root=value("work-root"),
             fact_store_db=value("fact-store-db"),
+            main_db=value("main-db"),
+            entity_db=value("entity-db"),
+            vector_store=value("vector-store"),
+            work_db=value("work-db"),
+            himalaya_executable=value("himalaya-executable"),
+            hermes_executable=value("hermes-executable"),
+            codex_executable=value("codex-executable"),
+            claude_executable=value("claude-executable"),
             fact_store_module_root=value("fact-store-module-root"),
             fact_store_provider=value("fact-store-provider"),
-            runtime_provider=value("runtime-provider"),
             account_label=value("account-label"),
             account_email=value("account-email"),
             include_folders=value("include-folders"),

@@ -155,11 +155,15 @@ Initialize and inspect the configured runtime:
 EMAIL_MEMORY_ENV="${XDG_DATA_HOME:-$HOME/.local/share}/email-memory-store/current"
 RUNTIME_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/runtime.toml"
 "$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" init-db
+"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" runtime-doctor
+"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" runtime-doctor --require mail --require selected-llm
 "$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" status
 ```
 
 Message ingestion and indexing require the locally selected connector and
-policy. They are intentionally not inferred from the checkout.
+policy. The setup form suggests installed command paths, but runtime operations
+use only the absolute executables recorded in `runtime.toml`; they are
+intentionally not inferred from the checkout or rediscovered from `PATH`.
 
 ## MCP Registration
 

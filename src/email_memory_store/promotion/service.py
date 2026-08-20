@@ -511,8 +511,15 @@ class EmailPromotionService:
             updated += int(before)
         return updated
 
-    def build_llm_promotion_plan(self, limit: int = 20, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        resolved = PromotionLLMConfig.from_dict(config or self.store.get_promotion_llm_config())
+    def _resolve_llm_config(
+        self, config: dict[str, Any] | PromotionLLMConfig | None,
+    ) -> PromotionLLMConfig:
+        if isinstance(config, PromotionLLMConfig):
+            return config
+        return PromotionLLMConfig.from_dict(config or self.store.get_promotion_llm_config())
+
+    def build_llm_promotion_plan(self, limit: int = 20, config: dict[str, Any] | PromotionLLMConfig | None = None) -> dict[str, Any]:
+        resolved = self._resolve_llm_config(config)
         provider = create_provider(resolved.provider)
         soul_text = load_soul_text(resolved.soul.path, default_soul_path=self.store.paths.default_promotion_soul_path)
         candidates = self.select_promotions(limit=limit)
@@ -539,9 +546,10 @@ class EmailPromotionService:
             'batches': rendered_batches,
         }
 
-    def execute_llm_promotion_plan(self, limit: int = 20, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def execute_llm_promotion_plan(self, limit: int = 20, config: dict[str, Any] | PromotionLLMConfig | None = None) -> dict[str, Any]:
+        resolved = self._resolve_llm_config(config)
         plan = self.build_llm_promotion_plan(limit=limit, config=config)
-        provider = create_provider(PromotionLLMConfig.from_dict({'provider': plan['provider'], 'batching': plan['batching'], 'soul': {'path': plan['soul']['path']}}).provider)
+        provider = create_provider(resolved.provider)
         results = [provider.evaluate_prompt(batch['prompt']) for batch in plan['batches']]
         return {
             'provider': plan['provider'],
@@ -553,7 +561,7 @@ class EmailPromotionService:
     def execute_and_commit_llm_promotions(
         self,
         limit: int = 20,
-        config: dict[str, Any] | None = None,
+        config: dict[str, Any] | PromotionLLMConfig | None = None,
         holographic_db_path: str | Path | None = None,
     ) -> dict[str, Any]:
         """Run LLM promotion batches and write accepted facts to Hermes holographic memory.
@@ -570,7 +578,7 @@ class EmailPromotionService:
         if not plan['batches']:
             return {'promoted': 0, 'rejected': 0, 'demoted': 0, 'edited': 0, 'errors': 0, 'candidate_count': 0}
 
-        resolved = PromotionLLMConfig.from_dict(config or self.store.get_promotion_llm_config())
+        resolved = self._resolve_llm_config(config)
         provider = create_provider(resolved.provider)
 
         # Build a lookup from source_object_id → candidate item for dedup-key generation

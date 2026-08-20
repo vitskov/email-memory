@@ -21,6 +21,28 @@ EXPECTED_TABLES = {
 }
 
 
+def test_store_uses_explicit_database_paths(tmp_path: Path):
+    root = tmp_path / "runtime"
+    main_db = tmp_path / "durable" / "main.duckdb"
+    entity_db = tmp_path / "entities" / "entity.duckdb"
+    work_db = tmp_path / "work" / "active.duckdb"
+
+    store = EmailMemoryStore(
+        root,
+        use_work_db=True,
+        db_path=main_db,
+        entity_db_path=entity_db,
+        work_db_path=work_db,
+    )
+    try:
+        assert store.paths.db_path == main_db
+        assert store.paths.entity_db_path == entity_db
+        assert store.paths.work_db_path == work_db
+        assert store.active_db_path == work_db
+    finally:
+        store.close()
+
+
 def test_initialize_creates_expected_directories_and_tables(tmp_path: Path):
     store = EmailMemoryStore(tmp_path / "email_memory")
     store.initialize()

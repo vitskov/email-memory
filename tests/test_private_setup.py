@@ -25,9 +25,12 @@ def _values(**changes: str) -> PrivateSetupValues:
         "runtime_root": "/var/lib/email-memory",
         "work_root": "/var/tmp/email-memory-work",
         "fact_store_db": "/var/lib/facts/facts.db",
+        "himalaya_executable": "/bin/true",
+        "hermes_executable": "/bin/true",
+        "codex_executable": "/bin/true",
+        "claude_executable": "/bin/true",
         "fact_store_module_root": "/opt/local-facts",
         "fact_store_provider": "local-fact-provider",
-        "runtime_provider": "local-provider",
         "account_label": "primary",
         "account_email": "person@example.test",
         "include_folders": "Inbox, Archive/Projects",
@@ -57,11 +60,21 @@ def test_write_private_setup_creates_separate_owner_only_artifacts(tmp_path):
 
     assert all(_is_owner_only(path) for path in (paths.config_dir, *paths.artifacts))
     assert tomllib.loads(paths.runtime_manifest.read_text(encoding="utf-8")) == {
-        "schema_version": 1,
-        "runtime_root": "/var/lib/email-memory",
-        "work_root": "/var/tmp/email-memory-work",
-        "fact_store_db": "/var/lib/facts/facts.db",
-        "runtime_provider": {"name": "local-provider"},
+        "schema_version": 2,
+        "storage": {
+            "runtime_root": "/var/lib/email-memory",
+            "main_db": "/var/lib/email-memory/email_memory.duckdb",
+            "entity_db": "/var/lib/email-memory/entity_memory.duckdb",
+            "vector_store": "/var/lib/email-memory/chroma",
+            "work_db": "/var/tmp/email-memory-work/email_memory.work.duckdb",
+            "fact_store_db": "/var/lib/facts/facts.db",
+        },
+        "executables": {
+            "himalaya": "/bin/true",
+            "hermes": "/bin/true",
+            "codex": "/bin/true",
+            "claude": "/bin/true",
+        },
     }
     assert json.loads(paths.private_env.read_text(encoding="utf-8")) == {
         "alert_destination": "local-alert-reference",
@@ -210,3 +223,54 @@ async def test_private_setup_app_starts(tmp_path):
     app = PrivateSetupApp(config_home=tmp_path)
     async with app.run_test():
         assert app.query_one("#runtime-root", Input) is not None
+
+
+@pytest.mark.asyncio
+async def test_private_setup_prefills_executables_from_path(tmp_path, monkeypatch):
+    candidates = {
+        "himalaya": "/opt/tools/himalaya-current",
+        "hermes": "/opt/tools/hermes-current",
+        "codex": "/opt/tools/codex-current",
+        "claude": None,
+    }
+    monkeypatch.setattr(private_setup.shutil, "which", candidates.get)
+
+    app = PrivateSetupApp(config_home=tmp_path)
+    async with app.run_test():
+        assert app.query_one("#himalaya-executable", Input).value == candidates["himalaya"]
+        assert app.query_one("#hermes-executable", Input).value == candidates["hermes"]
+        assert app.query_one("#codex-executable", Input).value == candidates["codex"]
+        assert app.query_one("#claude-executable", Input).value == ""
+
+
+def test_private_setup_rejects_a_non_executable_target(tmp_path):
+    target = tmp_path / "not-executable"
+    target.write_text("placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="regular executable"):
+        validate_private_setup(_values(himalaya_executable=str(target)))
+
+
+def test_private_setup_rejects_effective_database_path_collisions():
+    with pytest.raises(ValueError, match="must be distinct"):
+        validate_private_setup(_values(
+            main_db="/srv/state/../shared.db",
+            entity_db="/srv/shared.db",
+        ))
+
+
+def test_load_private_setup_rejects_database_path_collisions(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+    manifest = tomllib.loads(paths.runtime_manifest.read_text(encoding="utf-8"))
+    manifest["storage"]["entity_db"] = manifest["storage"]["main_db"]
+    storage = manifest["storage"]
+    executables = manifest["executables"]
+    rendered = ["schema_version = 2", "", "[storage]"]
+    rendered.extend(f'{key} = {json.dumps(value)}' for key, value in storage.items())
+    rendered.extend(("", "[executables]"))
+    rendered.extend(f'{key} = {json.dumps(value)}' for key, value in executables.items())
+    paths.runtime_manifest.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    paths.runtime_manifest.chmod(0o600)
+
+    with pytest.raises(ValueError, match="must be distinct"):
+        load_private_setup(config_home=tmp_path)

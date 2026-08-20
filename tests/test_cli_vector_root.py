@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from email_memory_store import cli
 
 
@@ -24,10 +26,10 @@ def test_cmd_embed_status_uses_root_scoped_vector_store(monkeypatch, capsys):
     fake_store = FakeVectorStore()
     monkeypatch.setattr(cli, '_open_vector_store', lambda root: seen.append(root) or fake_store)
 
-    cli.cmd_embed_status(SimpleNamespace(root='/tmp/custom-root'))
+    cli.cmd_embed_status(SimpleNamespace(root='/tmp/custom-root', vector_store='/tmp/exact-vectors'))
 
     payload = json.loads(capsys.readouterr().out)
-    assert seen == ['/tmp/custom-root']
+    assert seen == [Path('/tmp/exact-vectors')]
     assert payload['persist_path'] == '/tmp/custom-root/chroma'
     assert payload['collections']['action_items'] == 2
 
@@ -59,6 +61,7 @@ def test_cmd_search_uses_root_scoped_vector_store(monkeypatch, capsys):
 
     cli.cmd_search(SimpleNamespace(
         root='/tmp/custom-root',
+        vector_store='/tmp/exact-vectors',
         legacy=False,
         query='deadline',
         effort='medium',
@@ -96,6 +99,8 @@ def test_cmd_ask_uses_root_scoped_vector_store(monkeypatch, capsys):
 
     cli.cmd_ask(SimpleNamespace(
         root='/tmp/custom-root',
+        vector_store='/tmp/exact-vectors',
+        hermes_executable='/opt/bin/hermes',
         query='when',
         effort='medium',
         limit=3,
@@ -171,7 +176,129 @@ def test_cmd_cleanup_expired_prunes_root_scoped_vector_store(monkeypatch, capsys
     assert payload['vectors_pruned'] == 3
 
 
-import pytest
+def test_browse_snapshot_copies_exact_configured_databases(monkeypatch, tmp_path):
+    main_db = tmp_path / 'durable' / 'selected-main.db'
+    entity_db = tmp_path / 'identity' / 'selected-entity.db'
+    work_db = tmp_path / 'scratch' / 'selected-work.db'
+    for path, content in (
+        (main_db, b'main'),
+        (entity_db, b'entity'),
+        (work_db, b'work'),
+        (Path(f'{main_db}.wal'), b'main-wal'),
+        (Path(f'{work_db}.wal'), b'work-wal'),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def __init__(
+            self, root, work_root=None, use_work_db=False, read_only=False, *,
+            db_path=None, entity_db_path=None, work_db_path=None,
+        ):
+            captured['root'] = Path(root)
+            captured['db_path'] = Path(db_path)
+            captured['entity_db_path'] = Path(entity_db_path)
+            captured['work_db_path'] = Path(work_db_path)
+            captured['use_work_db'] = use_work_db
+            captured['read_only'] = read_only
+            captured['main_content'] = Path(db_path).read_bytes()
+            captured['entity_content'] = Path(entity_db_path).read_bytes()
+            captured['work_content'] = Path(work_db_path).read_bytes()
+            captured['main_wal'] = Path(f'{db_path}.wal').read_bytes()
+            captured['work_wal'] = Path(f'{work_db_path}.wal').read_bytes()
+
+        def get_promotion_llm_config(self):
+            return {'provider': {'name': 'hermes-default'}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, 'EmailMemoryStore', FakeStore)
+    monkeypatch.setattr(cli, '_open_vector_store', lambda _path: object())
+    monkeypatch.setattr(
+        'email_memory_store.tui.launch_browser',
+        lambda store, **kwargs: captured.update(browser_kwargs=kwargs),
+    )
+
+    cli.cmd_browse(SimpleNamespace(
+        root=str(tmp_path / 'runtime-root'),
+        work_root=None,
+        main_db=str(main_db),
+        entity_db=str(entity_db),
+        work_db=str(work_db),
+        vector_store=str(tmp_path / 'vectors'),
+        use_work_db=True,
+        read_only=False,
+        snapshot=True,
+        hermes_executable='/opt/bin/hermes-current',
+    ))
+
+    assert captured['db_path'].name == 'main.duckdb'
+    assert captured['entity_db_path'].name == 'entity.duckdb'
+    assert captured['work_db_path'].name == 'work.duckdb'
+    assert captured['main_content'] == b'main'
+    assert captured['entity_content'] == b'entity'
+    assert captured['work_content'] == b'work'
+    assert captured['main_wal'] == b'main-wal'
+    assert captured['work_wal'] == b'work-wal'
+    assert captured['use_work_db'] is True
+    assert captured['read_only'] is True
+    assert captured['browser_kwargs']['provider_spec'].executable == '/opt/bin/hermes-current'
+    assert not captured['root'].exists()
+
+
+def test_browse_snapshot_cleans_up_when_copy_fails(monkeypatch, tmp_path):
+    snapshot_paths: list[Path] = []
+
+    def fail_during_copy(_source: Path, destination: Path) -> None:
+        destination.write_bytes(b'private-copy')
+        snapshot_paths.append(destination.parent)
+        if len(snapshot_paths) == 2:
+            raise OSError('copy failed')
+
+    monkeypatch.setattr(cli, '_copy_database_snapshot', fail_during_copy)
+    with pytest.raises(OSError, match='copy failed'):
+        cli.cmd_browse(SimpleNamespace(
+            root=str(tmp_path / 'runtime-root'),
+            main_db=str(tmp_path / 'main.db'),
+            entity_db=str(tmp_path / 'entity.db'),
+            work_db=None,
+            use_work_db=False,
+            snapshot=True,
+        ))
+
+    assert snapshot_paths
+    assert not snapshot_paths[0].exists()
+
+
+def test_browse_snapshot_ignores_missing_unused_work_database(monkeypatch, tmp_path):
+    main_db = tmp_path / 'main.db'
+    entity_db = tmp_path / 'entity.db'
+    main_db.write_bytes(b'main')
+    entity_db.write_bytes(b'entity')
+    captured: dict[str, object] = {}
+
+    def capture_browser(_args, **paths) -> None:
+        captured.update(paths)
+        captured['main_content'] = paths['main_db'].read_bytes()
+        captured['entity_content'] = paths['entity_db'].read_bytes()
+
+    monkeypatch.setattr(cli, '_run_browser', capture_browser)
+    cli.cmd_browse(SimpleNamespace(
+        root=str(tmp_path / 'runtime-root'),
+        main_db=str(main_db),
+        entity_db=str(entity_db),
+        work_db=str(tmp_path / 'missing-work.db'),
+        use_work_db=False,
+        snapshot=True,
+    ))
+
+    assert captured['work_db'] is None
+    assert captured['main_content'] == b'main'
+    assert captured['entity_content'] == b'entity'
+    assert not Path(captured['root']).exists()
 
 
 @pytest.mark.parametrize(
@@ -239,16 +366,24 @@ def test_embed_pipeline_handlers_use_root_scoped_vector_store(monkeypatch, capsy
     monkeypatch.setattr(cli, '_open_vector_store', lambda root: sentinel)
     monkeypatch.setattr(cli, '_maybe_checkpoint', lambda store, _args: None)
 
-    def fake_embed_for_pipeline_event(store, *, event, vector_store=None, embedder=None, batch_size=64):
+    args.vector_store = '/tmp/exact-vectors'
+    args.mail_client_executable = '/opt/bin/himalaya'
+    args.hermes_executable = '/opt/bin/hermes'
+
+    def fake_embed_for_pipeline_event(
+        store, *, event, vector_store=None, embedder=None, batch_size=64,
+        fact_store_db_path=None,
+    ):
         captured['embed_event'] = event
         captured['vector_store'] = vector_store
+        captured['fact_store_db_path'] = fact_store_db_path
         return {'ok': True}
 
     monkeypatch.setattr(cli, 'embed_for_pipeline_event', fake_embed_for_pipeline_event)
 
     if handler_name in {'cmd_initial_ingest', 'cmd_nightly_update'}:
         monkeypatch.setattr(cli, '_pre_flight_index_repair', lambda store: None)
-        monkeypatch.setattr(cli, 'HimalayaClient', lambda: object())
+        monkeypatch.setattr(cli, 'HimalayaClient', lambda **_kwargs: object())
         monkeypatch.setattr(cli, '_record_ingestion_report', lambda *a, **k: {})
         monkeypatch.setattr(cli, run_attr, lambda **kwargs: {'messages_added': 1})
     elif handler_name == 'cmd_extract_threads':
@@ -266,7 +401,7 @@ def test_embed_pipeline_handlers_use_root_scoped_vector_store(monkeypatch, capsy
             def __init__(self, store):
                 captured['service_store'] = store
 
-            def execute_and_commit_llm_promotions(self, *, limit, holographic_db_path):
+            def execute_and_commit_llm_promotions(self, *, limit, config, holographic_db_path):
                 captured['limit'] = limit
                 captured['holographic_db_path'] = holographic_db_path
                 return {'promoted': 1}
@@ -279,4 +414,5 @@ def test_embed_pipeline_handlers_use_root_scoped_vector_store(monkeypatch, capsy
     assert captured['vector_store'] is sentinel
     if handler_name == 'cmd_run_llm_promotions':
         assert captured['holographic_db_path'] == '/tmp/local-facts.db'
+        assert captured['fact_store_db_path'] == '/tmp/local-facts.db'
     assert payload['embedded'] == {'ok': True}

@@ -376,7 +376,7 @@ def test_answerer_end_to_end_with_mocked_subprocess(
         engine=StaticEngine(
             [_result(collection="message_chunks", id="1234:0", document="chunk text")]
         ),
-        provider_spec=LLMProviderSpec(),
+        provider_spec=LLMProviderSpec(executable="/opt/bin/hermes-current"),
     )
 
     result = answerer.answer("test query")
@@ -402,7 +402,7 @@ def test_answerer_refuses_malformed_model_output(
         engine=StaticEngine(
             [_result(collection="message_chunks", id="1234:0", document="chunk text")]
         ),
-        provider_spec=LLMProviderSpec(),
+        provider_spec=LLMProviderSpec(executable="/opt/bin/hermes-current"),
     )
 
     result = answerer.answer("test query")

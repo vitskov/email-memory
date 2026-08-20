@@ -43,7 +43,13 @@ class ThreadSummaryScreen(ModalScreen):
 class SemanticSearchScreen(ModalScreen):
     BINDINGS = [("escape", "dismiss", "Close"), ("q", "dismiss", "Close")]
 
-    def __init__(self, effort: str = "medium", limit: int = 10, *, vector_store=None) -> None:
+    def __init__(
+        self,
+        effort: str = "medium",
+        limit: int = 10,
+        *,
+        vector_store=None,
+    ) -> None:
         super().__init__()
         self._effort = effort
         self._limit = limit
@@ -95,11 +101,21 @@ class SemanticSearchScreen(ModalScreen):
 class AskScreen(ModalScreen):
     BINDINGS = [("escape", "dismiss", "Close"), ("q", "dismiss", "Close")]
 
-    def __init__(self, effort: str = "medium", limit: int = 10, *, vector_store=None) -> None:
+    def __init__(
+        self,
+        effort: str = "medium",
+        limit: int = 10,
+        *,
+        vector_store=None,
+        provider_spec=None,
+        provider_error: str | None = None,
+    ) -> None:
         super().__init__()
         self._effort = effort
         self._limit = limit
         self._vector_store = vector_store
+        self._provider_spec = provider_spec
+        self._provider_error = provider_error
 
     def compose(self) -> ComposeResult:
         with Vertical(id="ask-root"):
@@ -117,12 +133,20 @@ class AskScreen(ModalScreen):
         if not query:
             output.update("_Empty question._")
             return
+        if self._provider_spec is None:
+            output.update(
+                f"**Configuration error:** {self._provider_error or 'LLM provider executable is not configured.'}"
+            )
+            return
         output.update("_Asking the LLM (this may take a moment)..._")
         try:
             from email_memory_store.retrieval.answerer import Answerer
             from email_memory_store.retrieval.engine import RetrievalEngine
             from email_memory_store.retrieval.filters import RetrievalFilters, parse_natural_date_range
-            answerer = Answerer(engine=RetrievalEngine(vector_store=self._vector_store))
+            answerer = Answerer(
+                engine=RetrievalEngine(vector_store=self._vector_store),
+                provider_spec=self._provider_spec,
+            )
             date_from, date_to = parse_natural_date_range(query)
             result = answerer.answer(
                 query,

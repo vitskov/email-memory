@@ -59,20 +59,103 @@ def test_runtime_config_from_environment_supplies_runtime_and_work_roots(tmp_pat
 def test_versioned_runtime_manifest_accepts_the_supported_schema(tmp_path):
     config = tmp_path / "runtime.toml"
     config.write_text(
-        'schema_version = 1\nruntime_root = "/configured/root"\n',
+        '''schema_version = 2
+[storage]
+runtime_root = "/configured/root"
+main_db = "/configured/main.duckdb"
+entity_db = "/configured/entity.duckdb"
+vector_store = "/configured/chroma"
+[executables]
+himalaya = "/usr/local/bin/himalaya"
+hermes = "/usr/local/bin/hermes"
+codex = "/usr/local/bin/codex"
+claude = "/usr/local/bin/claude"
+''',
         encoding="utf-8",
     )
 
     assert load_runtime_config(config).runtime_root == Path("/configured/root")
 
 
-@pytest.mark.parametrize("manifest", ["schema_version = 2\n", 'schema_version = "1"\n'])
+@pytest.mark.parametrize("manifest", ["schema_version = 3\n", 'schema_version = "1"\n'])
 def test_runtime_manifest_rejects_unsupported_schema_versions(tmp_path, manifest):
     config = tmp_path / "runtime.toml"
     config.write_text(manifest, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="schema_version 1"):
+    with pytest.raises(ValueError, match="schema_version"):
         load_runtime_config(config)
+
+
+def test_v2_runtime_manifest_supplies_exact_storage_and_executables(tmp_path):
+    config = tmp_path / "runtime.toml"
+    config.write_text('''schema_version = 2
+[storage]
+runtime_root = "/srv/email-memory"
+main_db = "/data/main.duckdb"
+entity_db = "/data/entity.duckdb"
+vector_store = "/vectors/email"
+work_db = "/work/email.duckdb"
+fact_store_db = "/facts/store.db"
+[executables]
+himalaya = "/opt/bin/himalaya-current"
+hermes = "/opt/bin/hermes-current"
+codex = "/opt/bin/codex-current"
+claude = "/opt/bin/claude-current"
+''', encoding="utf-8")
+
+    settings = resolve_runtime_settings(
+        runtime_root=None, work_root=None, runtime_config=config, environ={},
+    )
+
+    assert settings.main_db == Path("/data/main.duckdb")
+    assert settings.entity_db == Path("/data/entity.duckdb")
+    assert settings.vector_store == Path("/vectors/email")
+    assert settings.work_db == Path("/work/email.duckdb")
+    assert settings.fact_store_db == Path("/facts/store.db")
+    assert settings.mail_client_executable == Path("/opt/bin/himalaya-current")
+    assert settings.executable_for_provider("codex-cli") == Path("/opt/bin/codex-current")
+
+
+def test_v2_runtime_manifest_rejects_relative_paths(tmp_path):
+    config = tmp_path / "runtime.toml"
+    config.write_text('''schema_version = 2
+[storage]
+runtime_root = "/srv/email-memory"
+main_db = "relative.duckdb"
+entity_db = "/data/entity.duckdb"
+vector_store = "/vectors/email"
+''', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="absolute path"):
+        load_runtime_config(config)
+
+
+def test_v2_runtime_manifest_rejects_runtime_provider(tmp_path):
+    config = tmp_path / "runtime.toml"
+    config.write_text('''schema_version = 2
+[storage]
+runtime_root = "/srv/email-memory"
+main_db = "/data/main.duckdb"
+entity_db = "/data/entity.duckdb"
+vector_store = "/vectors/email"
+[runtime_provider]
+name = "legacy-provider"
+''', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported field"):
+        load_runtime_config(config)
+
+
+def test_legacy_runtime_has_no_path_discovered_executables(tmp_path):
+    config = tmp_path / "runtime.toml"
+    config.write_text('schema_version = 1\nruntime_root = "/legacy"\n', encoding="utf-8")
+    settings = resolve_runtime_settings(
+        runtime_root=None, work_root=None, runtime_config=config, environ={},
+    )
+
+    assert settings.mail_client_executable is None
+    with pytest.raises(ValueError, match="not configured"):
+        settings.executable_for_provider("hermes-default")
 
 
 def test_runtime_manifest_rejects_unknown_top_level_fields(tmp_path):
@@ -160,3 +243,79 @@ def test_unknown_runtime_provider_fails_closed(monkeypatch):
 
     with pytest.raises(ValueError, match="was not found"):
         load_runtime_provider("missing")
+
+
+def test_runtime_rejects_colliding_database_paths(tmp_path):
+    config = tmp_path / "runtime.toml"
+    config.write_text('''schema_version = 2
+[storage]
+runtime_root = "/runtime"
+main_db = "/data/shared.duckdb"
+entity_db = "/data/nested/../shared.duckdb"
+vector_store = "/data/vectors"
+''', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be distinct"):
+        resolve_runtime_settings(
+            runtime_root=None, work_root=None, runtime_config=config, environ={},
+        )
+
+
+def test_runtime_provider_rejects_relative_storage_paths(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.toml"
+    config.write_text('[runtime_provider]\nname = "local"\n', encoding="utf-8")
+
+    class EntryPoint:
+        def load(self):
+            return lambda: {"runtime_root": "relative/runtime"}
+
+    class EntryPoints:
+        def select(self, *, group, name):
+            return [EntryPoint()]
+
+    monkeypatch.setattr(runtime.metadata, "entry_points", lambda: EntryPoints())
+    with pytest.raises(ValueError, match="absolute path"):
+        resolve_runtime_settings(
+            runtime_root=None, work_root=None, runtime_config=config, environ={},
+        )
+
+
+def test_runtime_provider_settings_object_rejects_relative_storage(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.toml"
+    config.write_text('[runtime_provider]\nname = "local"\n', encoding="utf-8")
+
+    class EntryPoint:
+        def load(self):
+            return lambda: runtime.RuntimeSettings(runtime_root=Path("relative/runtime"))
+
+    class EntryPoints:
+        def select(self, *, group, name):
+            return [EntryPoint()]
+
+    monkeypatch.setattr(runtime.metadata, "entry_points", lambda: EntryPoints())
+    with pytest.raises(ValueError, match="relative runtime_root"):
+        resolve_runtime_settings(
+            runtime_root=None, work_root=None, runtime_config=config, environ={},
+        )
+
+
+def test_runtime_provider_settings_object_rejects_relative_executable(tmp_path, monkeypatch):
+    config = tmp_path / "runtime.toml"
+    config.write_text('[runtime_provider]\nname = "local"\n', encoding="utf-8")
+
+    class EntryPoint:
+        def load(self):
+            return lambda: runtime.RuntimeSettings(
+                runtime_root=Path("/runtime"),
+                codex_executable=Path("relative/codex"),
+            )
+
+    class EntryPoints:
+        def select(self, *, group, name):
+            return [EntryPoint()]
+
+    monkeypatch.setattr(runtime.metadata, "entry_points", lambda: EntryPoints())
+    with pytest.raises(ValueError, match="relative codex_executable"):
+        resolve_runtime_settings(
+            runtime_root=None, work_root=None, runtime_config=config, environ={},
+        )

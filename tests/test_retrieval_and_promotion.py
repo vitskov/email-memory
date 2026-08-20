@@ -3,6 +3,7 @@ from pathlib import Path
 from email_memory_store.store import EmailMemoryStore
 from email_memory_store.retrieval.service import EmailRetrievalService
 from email_memory_store.promotion.service import EmailPromotionService
+from email_memory_store.promotion.llm import PromotionLLMConfig
 
 
 def _seed_store(store: EmailMemoryStore) -> None:
@@ -411,7 +412,16 @@ def test_promotion_service_can_execute_llm_promotion_plan(tmp_path: Path, monkey
 
     monkeypatch.setattr('subprocess.run', fake_run)
     service = EmailPromotionService(store)
-    executed = service.execute_llm_promotion_plan(limit=3)
+    executed = service.execute_llm_promotion_plan(
+        limit=3,
+        config=PromotionLLMConfig.from_dict({
+            'provider': {
+                'name': 'codex-cli',
+                'model': 'gpt-5-codex',
+            },
+            'batching': {'max_candidates_per_batch': 1, 'max_input_chars': 1000},
+        }).bind_provider_executable('/opt/bin/codex-current'),
+    )
 
     assert executed['provider']['name'] == 'codex-cli'
     assert executed['executed_batches'] >= 1
@@ -455,7 +465,16 @@ def test_execute_and_commit_llm_promotions_writes_to_holographic(tmp_path, monke
     )
 
     service = EmailPromotionService(store)
-    result = service.execute_and_commit_llm_promotions(limit=5)
+    result = service.execute_and_commit_llm_promotions(
+        limit=5,
+        config=PromotionLLMConfig.from_dict({
+            'provider': {
+                'name': 'codex-cli',
+                'model': 'gpt-5-codex',
+            },
+            'batching': {'max_candidates_per_batch': 5, 'max_input_chars': 50000},
+        }).bind_provider_executable('/opt/bin/codex-current'),
+    )
 
     assert result['promoted'] == 1
     assert result['rejected'] == 1

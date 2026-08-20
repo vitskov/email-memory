@@ -23,10 +23,14 @@ class BrowserApp(App):
 
     _search_text: reactive[str] = reactive("", init=False)
 
-    def __init__(self, store, *, vector_store=None):
+    def __init__(
+        self, store, *, vector_store=None, provider_spec=None, provider_error: str | None = None,
+    ):
         super().__init__()
         self._store = store
         self._vector_store = vector_store
+        self._provider_spec = provider_spec
+        self._provider_error = provider_error
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="Search by keyword, name, or email  (/ to focus, Esc to clear)", id="search-input")
@@ -118,7 +122,11 @@ class BrowserApp(App):
 
     def action_ask(self) -> None:
         from .screens import AskScreen
-        self.push_screen(AskScreen(vector_store=self._vector_store))
+        self.push_screen(AskScreen(
+            vector_store=self._vector_store,
+            provider_spec=self._provider_spec,
+            provider_error=self._provider_error,
+        ))
 
     def action_cursor_down(self) -> None:
         try:

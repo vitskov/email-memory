@@ -58,6 +58,7 @@ def infer_reasonable_max_input_chars(spec: 'LLMProviderSpec | None' = None) -> i
 class LLMProviderSpec:
     name: str = 'hermes-default'
     model: str | None = None
+    executable: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {'name': self.name, 'model': self.model}
@@ -65,7 +66,14 @@ class LLMProviderSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> 'LLMProviderSpec':
         data = data or {}
-        return cls(name=data.get('name', 'hermes-default'), model=data.get('model'))
+        return cls(
+            name=data.get('name', 'hermes-default'),
+            model=data.get('model'),
+        )
+
+    def bind_executable(self, executable: str | Path) -> 'LLMProviderSpec':
+        """Return a runtime-bound copy without making the path serializable."""
+        return LLMProviderSpec(name=self.name, model=self.model, executable=str(executable))
 
 
 @dataclass(frozen=True)
@@ -270,6 +278,15 @@ class PromotionLLMConfig:
             'rulebook': self.rulebook.to_dict(),
         }
 
+    def bind_provider_executable(self, executable: str | Path) -> 'PromotionLLMConfig':
+        """Bind a trusted runtime executable while preserving persisted config shape."""
+        return PromotionLLMConfig(
+            provider=self.provider.bind_executable(executable),
+            batching=self.batching,
+            soul=self.soul,
+            rulebook=self.rulebook,
+        )
+
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> 'PromotionLLMConfig':
         data = data or {}
@@ -299,6 +316,11 @@ class BaseLLMProvider:
     def build_command(self, prompt: str) -> list[str]:
         raise NotImplementedError
 
+    def _executable(self) -> str:
+        if not self.spec.executable:
+            raise ValueError(f'Provider {self.spec.name} executable is not configured')
+        return self.spec.executable
+
     def _extract_json_payload(self, text: str) -> dict[str, Any]:
         text = text.strip()
         candidates = []
@@ -323,7 +345,7 @@ class BaseLLMProvider:
 
 class HermesDefaultProvider(BaseLLMProvider):
     def build_command(self, prompt: str) -> list[str]:
-        command = ['hermes', 'chat', '-Q']
+        command = [self._executable(), 'chat', '-Q']
         if self.spec.model:
             command.extend(['-m', self.spec.model])
         command.extend(['-q', prompt])
@@ -334,14 +356,14 @@ class CodexCLIProvider(BaseLLMProvider):
     requires_explicit_model = True
 
     def build_command(self, prompt: str) -> list[str]:
-        return ['codex', 'exec', '--model', self.spec.model or '', prompt]
+        return [self._executable(), 'exec', '--model', self.spec.model or '', prompt]
 
 
 class ClaudeCodeCLIProvider(BaseLLMProvider):
     requires_explicit_model = True
 
     def build_command(self, prompt: str) -> list[str]:
-        return ['claude', '--model', self.spec.model or '', prompt]
+        return [self._executable(), '--model', self.spec.model or '', prompt]
 
 
 def create_provider(spec: LLMProviderSpec) -> BaseLLMProvider:
