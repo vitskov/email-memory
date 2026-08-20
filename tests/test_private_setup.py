@@ -178,7 +178,23 @@ def test_write_private_setup_supports_all_sender_archive_matchers(tmp_path):
             "must contain folder",
         ),
         (
+            _values(retention_sender_archive_rules='[{"folder":"   ","emails":["contact@example.test"]}]'),
+            "must be a non-empty string",
+        ),
+        (
+            _values(retention_sender_archive_rules='[{"folder":"Archive","domains":["   "]}]'),
+            "must be a list of non-empty strings",
+        ),
+        (
             _values(retention_classification_definitions='{"kind": 1}'),
+            "string-to-string mapping",
+        ),
+        (
+            _values(retention_classification_definitions='{"   ": "definition"}'),
+            "string-to-string mapping",
+        ),
+        (
+            _values(retention_classification_definitions='{"kind": "   "}'),
             "string-to-string mapping",
         ),
     ],

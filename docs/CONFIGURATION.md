@@ -160,15 +160,17 @@ are rejected.
 
 The `retention` object may be omitted. Every field inside it is optional, but
 when present `inbox_folder`, `department_folder`, `service_folder`, and
-`archive_folder` must be nonempty strings. `sender_archive_rules` must be an
-array whose entries contain `folder` (a nonempty string) and may contain only
+`archive_folder` must be non-whitespace strings. `sender_archive_rules` must be an
+array whose entries contain `folder` (a non-whitespace string) and may contain only
 the matcher arrays `emails`, `domains`, `address_contains`, and
-`name_contains`. Each supplied matcher must be an array of nonempty strings,
+`name_contains`. Each supplied matcher must be an array of non-whitespace
+strings,
 and every rule must have at least one nonempty matcher array. The legacy
 `folder` plus `emails` form remains valid. `classification_definitions` must be
-a string-to-string mapping. These names and values remain private deployment
-policy and must never be placed in public tests, documentation examples with
-real identities, or a public release archive.
+a mapping whose keys and values are non-whitespace strings. These names and
+values remain private deployment policy and must never be placed in public
+tests, documentation examples with real identities, or a public release
+archive.
 
 ## Runtime Resolution
 
