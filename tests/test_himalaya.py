@@ -157,23 +157,26 @@ def test_run_backoff_is_capped(monkeypatch):
     assert sleeps == [10.0, 20.0, 30.0, 30.0, 30.0]
 
 
-def test_run_retries_timeouts_as_transient_provider_failures(monkeypatch):
+def test_run_converts_timeouts_to_retryable_provider_failures(monkeypatch):
     attempts = []
     sleeps = []
 
     def fake_run(args, *, text, capture_output, check, timeout):
         attempts.append((args, timeout))
-        if len(attempts) == 1:
-            raise subprocess.TimeoutExpired(args, timeout)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout=b'[]', stderr=b'')
+        raise subprocess.TimeoutExpired(args, timeout)
 
     monkeypatch.setattr(subprocess, 'run', fake_run)
     monkeypatch.setattr('email_memory_store.himalaya.time.sleep', lambda s: sleeps.append(s))
 
     client = HimalayaClient(binary='himalaya', retries=2, retry_delay=3.0, command_timeout_seconds=11.0)
-    assert client.list_envelopes(account='primary-account') == []
-    assert [timeout for _, timeout in attempts] == [11.0, 11.0]
-    assert sleeps == [3.0]
+    import pytest
+
+    with pytest.raises(subprocess.CalledProcessError, match='returned non-zero exit status 124') as exc_info:
+        client.list_envelopes(account='primary-account')
+
+    assert 'timed out after 11 seconds' in str(exc_info.value.stderr)
+    assert [timeout for _, timeout in attempts] == [11.0]
+    assert sleeps == []
 
 
 def test_himalaya_client_rejects_non_positive_command_timeout():

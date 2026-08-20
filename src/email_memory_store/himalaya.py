@@ -166,9 +166,11 @@ class HimalayaClient:
                         f'{self.command_timeout_seconds:g} seconds'
                     ),
                 )
-                if attempt >= self.retries:
-                    raise last_error
-                self._sleep_for_attempt(attempt)
+                # A timeout means this process stopped making progress.  Do
+                # not multiply one stuck provider call by the normal retry
+                # budget; the caller records a retryable partial result and
+                # the next scheduled run gets a fresh provider process.
+                raise last_error
             except subprocess.CalledProcessError as exc:
                 last_error = exc
                 if is_permanent_himalaya_error(exc) or attempt >= self.retries:
