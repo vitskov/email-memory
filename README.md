@@ -130,3 +130,12 @@ domains in tests and documentation.
 Release checks must examine the complete publishable Git history and archive, not
 only the working tree. The public remote belongs only to the sanitized publishing
 clone; operational working copies should not have a writable public push remote.
+
+The hosted `privacy` job applies generic, value-free rules to tracked content,
+reachable Git history, the release archive, and built distributions. Repository
+rules for `main` must require that job before a pull request can merge. A local
+deployment must additionally run its ignored, locally populated identifier
+denylist against the clean public candidate repository before pushing. Exact
+private identifiers must never be copied into this repository or GitHub settings.
+See [Privacy release controls](docs/PRIVACY_RELEASE_CONTROLS.md) for the control
+boundary and release procedure.
