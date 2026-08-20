@@ -56,8 +56,12 @@ This split is intentional:
    changes.
 3. Run the hosted-equivalent generic privacy scanner locally.
 4. Run the deployment-specific local gate with its ignored denylist.
-5. Push through a pull request and require the hosted `privacy` check to pass
-   before merge.
+5. Push the exact candidate commit through a pull request and require the
+   hosted `privacy` check to pass.
+6. Publish that exact tested commit with a fast-forward update of `main`.
+   Do not use a GitHub merge commit, squash merge, or server-side rebase: those
+   operations create new commit metadata that the local identifier gate cannot
+   validate before publication.
 
 Any failure is fail-closed. Remove the offending value from the complete
 reachable history or recreate the sanitized publication history; deleting it
