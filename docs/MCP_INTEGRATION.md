@@ -120,7 +120,7 @@ attachment or index instead of pointing the host at a new empty directory.
   use the host's supported MCP reconnect operation. Package installation should
   not restart or signal the host application.
 
-For immutable environment staging and upgrade verification, see
+For public-core bootstrap and package upgrade checks, see
 [Installation](INSTALLATION.md). For runtime precedence and permission checks,
 see [Configuration](CONFIGURATION.md). For the package/runtime trust boundary,
 see the [Architecture Overview](ARCHITECTURE_OVERVIEW.md).

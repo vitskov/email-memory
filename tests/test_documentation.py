@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
+import sys
 from urllib.parse import unquote
 
 
@@ -54,3 +56,51 @@ def test_readme_keeps_hermes_optional() -> None:
 
     assert "optional" in normalized_section.lower()
     assert "not an installation or MCP requirement" in normalized_section
+
+
+def test_public_guides_exclude_private_deployment_and_obsolete_runbooks() -> None:
+    public_guides = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+    )
+    obsolete_or_private_runbook_phrases = {
+        "## Stable Deployment Environment",
+        "runtime-provider package",
+        "process ID and restart count",
+        "scheduler launchers",
+        "normal in-process retry budget",
+        "bounded nightly scan",
+        "legacy body cursor",
+        "runtime_provider",
+        "Explicit legacy root",
+    }
+
+    assert all(
+        phrase not in public_guides for phrase in obsolete_or_private_runbook_phrases
+    )
+
+
+def test_cross_document_guidance_names_sections_that_exist() -> None:
+    integration = (ROOT / "docs" / "MCP_INTEGRATION.md").read_text(encoding="utf-8")
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+
+    assert "public-core bootstrap and package upgrade checks" in integration
+    assert "## Clone And Bootstrap" in installation
+    assert "## Upgrade" in installation
+
+
+def test_documented_installed_commands_expose_help() -> None:
+    bin_dir = Path(sys.executable).parent
+    commands = [
+        [str(bin_dir / "email-memory-store"), "--help"],
+        [str(bin_dir / "email-memory-store"), "setup-private", "--help"],
+        [str(bin_dir / "email-memory-store"), "init-db", "--help"],
+        [str(bin_dir / "email-memory-store"), "runtime-doctor", "--help"],
+        [str(bin_dir / "email-memory-store"), "status", "--help"],
+        [str(bin_dir / "email-memory-store"), "search", "--help"],
+        [str(bin_dir / "email-memory-store"), "embed-status", "--help"],
+        [str(bin_dir / "email-memory-store-mcp"), "--help"],
+    ]
+
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True, text=True)

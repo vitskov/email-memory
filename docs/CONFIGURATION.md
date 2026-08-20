@@ -62,8 +62,8 @@ claude = "/absolute/path/to/claude"
 The current runtime schema is `2`. The four primary `storage` fields are
 required; `work_db`, `fact_store_db`, and every executable are optional. All
 supplied values must be absolute. Schema v2 deliberately rejects a
-`runtime_provider` table so that the selected manifest remains the single
-authoritative source of runtime paths.
+second provider layer: the selected manifest is the single authoritative source
+of runtime paths.
 The setup interface suggests executable candidates using `PATH` only while the
 form is open, validates supplied candidates as executable files, and writes the
 selected path without resolving stable symlinks. Normal commands never search
@@ -71,10 +71,9 @@ selected path without resolving stable symlinks. Normal commands never search
 requires the executable for its selected provider. DB-only commands and MCP
 `search` do not require an executable.
 
-Unversioned and schema-v1 flat manifests, including their legacy named runtime
-provider references, remain readable for compatibility. They are not written
-by the setup command and do not gain implicit executable discovery; regenerate
-them as v2 before using mail or LLM capabilities.
+Older manifests remain readable for compatibility, but they are not a setup or
+deployment path. Regenerate them with `setup-private` before using mail or LLM
+capabilities.
 
 The launcher that starts the CLI or MCP server owns the manifest path. The
 public process resolves the selected attachment once at startup instead of
@@ -165,8 +164,8 @@ array whose entries contain `folder` (a non-whitespace string) and may contain o
 the matcher arrays `emails`, `domains`, `address_contains`, and
 `name_contains`. Each supplied matcher must be an array of non-whitespace
 strings,
-and every rule must have at least one nonempty matcher array. The legacy
-`folder` plus `emails` form remains valid. `classification_definitions` must be
+and every rule must have at least one nonempty matcher array. A rule containing
+only `folder` and `emails` remains valid. `classification_definitions` must be
 a mapping whose keys and values are non-whitespace strings. These names and
 values remain private deployment policy and must never be placed in public
 tests, documentation examples with real identities, or a public release
@@ -187,20 +186,19 @@ export EMAIL_MEMORY_STORE_RUNTIME_CONFIG=/path/to/runtime.toml
 email-memory-store status
 ```
 
-Each setting resolves in this order:
+For the schema-version-2 manifest written by `setup-private`, each setting
+resolves in this order:
 
 1. The corresponding command-line option: `--root`, `--work-root`, or
    `--fact-store-db`.
 2. The matching field in the selected `runtime.toml`.
-3. For legacy unversioned or schema-v1 manifests only, the matching field
-   returned by their explicitly named local runtime provider.
-4. For `runtime_root` only, the generic XDG state default.
+3. For `runtime_root` only, the generic XDG state default.
 
 For a schema-v2 manifest, the exact `main_db`, `entity_db`, `vector_store`, and
 optional `work_db` paths are authoritative; they need not be children of
-`runtime_root`. Explicit legacy root options derive legacy child paths and take
-precedence when supplied. The manifest selection itself resolves
-`--runtime-config` before
+`runtime_root`. Supplying `--root` derives database and vector paths from that
+root for the current invocation and therefore replaces the corresponding
+manifest paths. The manifest selection itself resolves `--runtime-config` before
 `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`. There is no default for `work_root` or
 `fact_store_db`.
 

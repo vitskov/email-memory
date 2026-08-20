@@ -83,7 +83,7 @@ The runtime filesystem also holds:
   the packaged structured-artifact boundary rather than persisting raw command
   streams
 - `config/promotion/` for runtime-local copies of customizable packaged assets
-- persistent vector-index data colocated with the selected runtime
+- persistent vector-index data at the exact configured storage path
 
 These paths are runtime data and must be excluded from a public source archive.
 
@@ -101,9 +101,9 @@ These paths are runtime data and must be excluded from a public source archive.
    produce citation-constrained answers.
 6. Promotion creates auditable candidates for a separately configured downstream
    fact store.
-7. Maintenance commands repair indexes, retry failed body processing, reconcile
-   every supported vector collection, normalize only provably completed legacy
-   body cursors, and remove eligible expired time-bound records.
+7. Maintenance commands repair durable state, retry incomplete processing,
+   reconcile indexes, and remove eligible expired records through explicit
+   operations.
 
 ## Core Services
 
@@ -130,24 +130,11 @@ report their work, and destructive cleanup requires an apply flag. The core keep
 durable state and local deployment control separate so that updating the package
 does not expose or migrate private data by itself.
 
-Mail-provider commands are bounded. A timed-out provider process is reaped and
-reported as a retryable failure without spending the normal in-process retry
-budget; it cannot hold a maintenance lock indefinitely. Initial and repair
-scans preserve their resumable cursor on such a failure, while the bounded
-nightly scan records the affected folder as partial and continues with the
-others on a fresh later run.
-
-`embed-backfill` is the authoritative full reconciliation pass. It compares each
-supported retrieval collection with its persisted source rows, adds missing
-vectors, and removes safe orphans. Incremental commands can embed newly created
-records sooner, but do not replace the full reconciliation pass.
-
-Initial envelope cursors drive resumable scans. Body cursors record body
-processing health and are never independent continuation instructions. A normal
-bounded nightly scan is complete even when its final page is full; only actual
-body failures remain partial. `reconcile-ingestion-cursors --apply` is an
-explicit maintenance operation for closing legacy body cursor residue when the
-matching envelope scan is already complete and its retry queue is empty.
+Provider failures are bounded and recorded as resumable or retryable state.
+Full reconciliation compares every supported vector collection with its durable
+source rows, while incremental indexing can make newly created records
+searchable sooner. Cursor state distinguishes completed work from actionable
+continuations without turning ordinary bounded scans into false failures.
 
 ## Public Release Invariants
 

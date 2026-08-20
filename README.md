@@ -73,19 +73,24 @@ cd email-memory
 ./scripts/bootstrap.sh
 ```
 
-Initialize a local runtime directory and confirm the store is available:
+Create the owner-only local configuration bundle, then initialize and inspect
+the runtime selected by its manifest:
 
 ```bash
-./.venv/bin/email-memory-store --root /path/to/runtime-root init-db
-./.venv/bin/email-memory-store --root /path/to/runtime-root status
+./.venv/bin/email-memory-store setup-private
+RUNTIME_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/runtime.toml"
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" init-db
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" status
 ```
 
 Runtime data belongs outside the repository and must not be committed. For a
-stable setup, use `./.venv/bin/email-memory-store setup-private` to create an
-owner-only runtime manifest and local policy bundle. The complete fresh-machine,
+stable setup, keep using the generated manifest rather than repeating storage
+or executable paths in launch commands. The complete public-core installation,
 accelerator, upgrade, and packaging procedures are in
 [Installation](docs/INSTALLATION.md); manifest schemas and precedence rules are
-in [Configuration](docs/CONFIGURATION.md).
+in [Configuration](docs/CONFIGURATION.md). Connector installation,
+authentication, scheduling, and notification delivery belong to the local
+deployment and are intentionally not prescribed by this public package.
 
 ## CLI or MCP
 

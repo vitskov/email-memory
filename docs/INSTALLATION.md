@@ -113,34 +113,12 @@ For development:
 ./scripts/run_ci_locally.sh
 ```
 
-## Stable Deployment Environment
-
-A long-running deployment should stage immutable, versioned environments outside
-the checkout and expose the selected version through a stable `current` symlink.
-This lets a candidate be verified before an MCP host or scheduler can see it and
-keeps rollback to the previous directory available:
-
-```bash
-ENV_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/email-memory-store"
-CANDIDATE="$ENV_ROOT/envs/$(git rev-parse --short=12 HEAD)-py314"
-./scripts/bootstrap.sh --environment "$CANDIDATE" --accelerator auto
-# Deployment tooling validates CANDIDATE before atomically selecting it as:
-# $ENV_ROOT/current
-```
-
-This environment belongs only to email-memory. Do not install the package into
-an agent host, web service, system Python, or another application's virtual
-environment. A local runtime-provider package may be installed into this
-environment with `--no-deps` after the locked public sync; it must not resolve
-or replace public dependencies.
-
 ## Local Configuration
 
 Create the owner-only configuration bundle with the installed CLI:
 
 ```bash
-EMAIL_MEMORY_ENV="${XDG_DATA_HOME:-$HOME/.local/share}/email-memory-store/current"
-"$EMAIL_MEMORY_ENV/bin/email-memory-store" setup-private
+./.venv/bin/email-memory-store setup-private
 ```
 
 The wizard writes configuration under
@@ -152,12 +130,12 @@ rules.
 Initialize and inspect the configured runtime:
 
 ```bash
-EMAIL_MEMORY_ENV="${XDG_DATA_HOME:-$HOME/.local/share}/email-memory-store/current"
 RUNTIME_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/runtime.toml"
-"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" init-db
-"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" runtime-doctor
-"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" runtime-doctor --require mail --require selected-llm
-"$EMAIL_MEMORY_ENV/bin/email-memory-store" --runtime-config "$RUNTIME_CONFIG" status
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" init-db
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" runtime-doctor
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" \
+  runtime-doctor --require mail --require selected-llm
+./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" status
 ```
 
 Message ingestion and indexing require the locally selected connector and
@@ -167,23 +145,20 @@ intentionally not inferred from the checkout or rediscovered from `PATH`.
 
 ## MCP Registration
 
-Register the executable from the isolated environment and pass the runtime
-manifest explicitly:
+Register the installed executable and pass the runtime manifest explicitly:
 
 ```text
-<XDG data>/email-memory-store/current/bin/email-memory-store-mcp
-    --runtime-config <XDG config>/email-memory-store/runtime.toml
+/absolute/path/to/email-memory/.venv/bin/email-memory-store-mcp
+    --runtime-config /absolute/path/to/runtime.toml
 ```
 
 The MCP service refuses to start if the attachment is absent, weakly
 permissioned, symlinked, invalid, or lacks indexed application data. Validate a
-new executable with the MCP host's standalone probe before replacing a running
-connection.
+new executable with the MCP host's standalone probe before reconnecting it.
 
 Email-memory installation and upgrade scripts must never stop, restart, reload,
-signal, or otherwise control the host application. After a successful probe,
-use only the host's user-facing MCP reconnect operation and verify that the host
-process ID and restart count did not change.
+signal, or otherwise control the host application. Reconnect through the host's
+documented user-facing MCP operation.
 
 ## Upgrade
 
@@ -192,9 +167,8 @@ Review dependency upgrades separately from ordinary source updates:
 ```bash
 git pull --ff-only
 uv lock --check
-ENV_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/email-memory-store"
-CANDIDATE="$ENV_ROOT/envs/$(git rev-parse --short=12 HEAD)-py314"
-./scripts/bootstrap.sh --environment "$CANDIDATE"
+./scripts/bootstrap.sh
+./scripts/run_ci_locally.sh
 ```
 
 `bootstrap.sh` uses `uv sync --locked --no-editable`, so it refuses a checkout
@@ -211,29 +185,11 @@ same check that hosted CI runs with:
 uv run --locked --extra dev mypy --config-file pyproject.toml src
 ```
 
-Database queries that must return a row use an explicit row contract, so an
-unexpected empty result is reported clearly instead of being hidden from type
-checking.
-
-Before reconnecting a deployed MCP service:
-
-1. run `uv pip check` against the isolated environment;
-2. run the test and quality gates;
-3. run a standalone MCP probe against the local manifest;
-4. confirm the host environment's package inventory did not change;
-5. atomically move the `current` symlink to the verified candidate;
-6. reconnect MCP through the host's supported user command;
-7. verify the host stayed active without restarting.
-
-Deployment wrappers must resolve executables through `current`. They must not
-invoke `uv run`, modify an environment in place, or select an unverified
-candidate while a scheduled or MCP process may be starting.
-
 `uv sync` restores the baseline locked environment, including its CPU PyTorch
 selection on non-macOS hosts. Always use `bootstrap.sh` to rebuild a deployment
-candidate so a selected CUDA overlay is reapplied, verified, and recorded. Run
-installed entry points directly from `current/bin`; do not put `uv run` in MCP
-or scheduler launchers.
+environment so a selected CUDA overlay is reapplied, verified, and recorded.
+Run installed entry points directly rather than putting `uv run` in a persistent
+MCP registration.
 
 ## Build A Wheel
 
