@@ -7,10 +7,7 @@ from typing import Literal, overload
 def normalize_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
-    text = value.strip()
-    if len(text) >= 6 and (text[-6] in ['+', '-']) and text[-3] == ':':
-        text = text[:-6] + ':00' + text[-6:]
-    return datetime.fromisoformat(text)
+    return datetime.fromisoformat(value.strip())
 
 
 @overload
