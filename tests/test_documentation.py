@@ -85,8 +85,57 @@ def test_cross_document_guidance_names_sections_that_exist() -> None:
     installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
 
     assert "public-core bootstrap and package upgrade checks" in integration
-    assert "## Clone And Bootstrap" in installation
+    assert "## Clone And Deploy" in installation
     assert "## Upgrade" in installation
+
+
+def test_deployment_guide_documents_public_transaction_contract() -> None:
+    deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    normalized = " ".join(deployment.split())
+    required_fragments = {
+        "./scripts/deploy.sh --accelerator auto",
+        "currently Linux-only",
+        "canonical passwd home",
+        "rejects ambient `HOME`/XDG root changes and a custom deployment root",
+        "Python 3.14",
+        "schema version 2",
+        "credential",
+        "real, read-only mail authentication probe",
+        "current/.deployment-readiness.json",
+        "current/bin/",
+        "email-memory-store-deploy doctor",
+        "Rollback is automatic within a deployment transaction",
+        "There is currently no public manual `rollback` subcommand",
+        "weekly alert day",
+        "current -> envs/<release>",
+        "email_memory_store.integrations.hermes_fact_store:MemoryStore",
+        "`telegram`, `slack`, or `discord`",
+    }
+
+    assert all(fragment in normalized for fragment in required_fragments)
+
+
+def test_public_docs_define_hermes_gateway_lifecycle_boundary() -> None:
+    guides = [
+        ROOT / "docs" / "DEPLOYMENT.md",
+        ROOT / "docs" / "INSTALLATION.md",
+        ROOT / "docs" / "CONFIGURATION.md",
+        ROOT / "docs" / "ARCHITECTURE_OVERVIEW.md",
+    ]
+
+    for guide in guides:
+        normalized = " ".join(guide.read_text(encoding="utf-8").split()).lower()
+        assert "email-memory never controls the hermes gateway lifecycle" in normalized
+
+
+def test_deployment_guide_commands_expose_help() -> None:
+    source_launcher = ROOT / "scripts" / "deploy.sh"
+    commands = [
+        [str(source_launcher), "--help"],
+    ]
+
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True, text=True)
 
 
 def test_documented_installed_commands_expose_help() -> None:

@@ -29,6 +29,8 @@ RUNTIME_MANIFEST_NAME = "runtime.toml"
 PRIVATE_ENV_NAME = "private.env.json"
 POLICY_NAME = "policy.json"
 PRIVATE_SETUP_SCHEMA_VERSION = 1
+FACT_STORE_PROVIDER = "email_memory_store.integrations.hermes_fact_store:MemoryStore"
+SUPPORTED_ALERT_TARGETS = frozenset({"discord", "slack", "telegram"})
 
 
 @dataclass(frozen=True)
@@ -237,9 +239,26 @@ def validate_private_setup(values: PrivateSetupValues) -> None:
         ("claude_executable", "Claude executable"),
     ):
         _optional_executable(getattr(values, field), field=label)
-    _optional_path(values.fact_store_module_root, field="fact-store module root")
-    _optional_text(values.fact_store_provider, field="fact-store provider")
-    _optional_text(values.alert_destination, field="alert destination")
+    fact_store_root = _optional_path(
+        values.fact_store_module_root, field="fact-store module root"
+    )
+    fact_store_provider = _optional_text(
+        values.fact_store_provider, field="fact-store provider"
+    )
+    if fact_store_root is None and fact_store_provider is not None:
+        raise ValueError(
+            "fact-store root and provider must be configured together"
+        )
+    if fact_store_provider is not None and fact_store_provider != FACT_STORE_PROVIDER:
+        raise ValueError("fact-store provider is unsupported")
+    alert_destination = _optional_text(
+        values.alert_destination, field="alert destination"
+    )
+    if (
+        alert_destination is not None
+        and alert_destination not in SUPPORTED_ALERT_TARGETS
+    ):
+        raise ValueError("alert destination is unsupported")
     _optional_text(values.credential_reference, field="credential reference")
     parse_folders(values.include_folders)
     parse_folders(values.exclude_folders)
@@ -278,9 +297,7 @@ def render_private_env(values: PrivateSetupValues) -> str:
     module_root = _optional_path(values.fact_store_module_root, field="fact-store module root")
     if module_root is not None:
         payload["fact_store_module_root"] = module_root
-    provider = _optional_text(values.fact_store_provider, field="fact-store provider")
-    if provider is not None:
-        payload["fact_store_provider"] = provider
+        payload["fact_store_provider"] = FACT_STORE_PROVIDER
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
@@ -495,6 +512,14 @@ def load_private_setup(
     )
     for key in set(private_env) - {"schema_version"}:
         _validate_string(private_env[key], artifact="private environment", key=key)
+    fact_store_root = private_env.get("fact_store_module_root")
+    fact_store_provider = private_env.get("fact_store_provider")
+    if bool(fact_store_root) != bool(fact_store_provider):
+        raise ValueError(
+            "private environment must configure fact-store root and provider together"
+        )
+    if fact_store_provider is not None and fact_store_provider != FACT_STORE_PROVIDER:
+        raise ValueError("private environment fact-store provider is unsupported")
 
     policy = _load_json_artifact(paths.policy, artifact="policy")
     _require_schema_version(policy, artifact="policy")
@@ -632,8 +657,6 @@ class PrivateSetupApp(App[None]):
             )
             yield Label("Fact-store module root")
             yield Input(placeholder="Optional absolute local path", id="fact-store-module-root")
-            yield Label("Fact-store provider reference")
-            yield Input(placeholder="Optional local provider reference", id="fact-store-provider")
             yield Label("Account label")
             yield Input(placeholder="Required local label", id="account-label")
             yield Label("Account email")
@@ -663,7 +686,10 @@ class PrivateSetupApp(App[None]):
                 id="retention-classification-definitions",
             )
             yield Label("Alert destination")
-            yield Input(placeholder="Optional local reference", password=True, id="alert-destination")
+            yield Input(
+                placeholder="Optional: telegram, slack, or discord",
+                id="alert-destination",
+            )
             yield Label("Credential reference")
             yield Input(placeholder="Optional local reference", password=True, id="credential-reference")
             yield Checkbox("I confirm replacement of any existing local configuration", id="confirm-overwrite")
@@ -688,7 +714,6 @@ class PrivateSetupApp(App[None]):
             codex_executable=value("codex-executable"),
             claude_executable=value("claude-executable"),
             fact_store_module_root=value("fact-store-module-root"),
-            fact_store_provider=value("fact-store-provider"),
             account_label=value("account-label"),
             account_email=value("account-email"),
             include_folders=value("include-folders"),

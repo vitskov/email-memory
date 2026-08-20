@@ -2,10 +2,11 @@
 
 ## Purpose
 
-The installed core receives private deployment information through a structured
-local configuration bundle. The bundle is created by the interactive
-`setup-private` command and stays outside the checkout, package distribution,
-test fixtures, and public Git history.
+The installed core and the package-owned deployment operations receive private
+deployment information through a structured local configuration bundle. The
+bundle is created by the interactive `setup-private` command (opened
+automatically by a first deployment) and stays outside the checkout, package
+distribution, test fixtures, and public Git history.
 
 The core owns the bundle format and validates the public runtime contract. It
 does not discover local data or private configuration implicitly.
@@ -36,10 +37,18 @@ Treat the bundle as confidential even when it holds references rather than
 secrets: paths, labels, addresses, selections, and destinations are private
 deployment data.
 
+Standalone CLI setup follows the XDG location above. The transactional
+production deploy instead uses the invoking account's canonical passwd home and
+rejects ambient `HOME`/XDG root changes, so its bundle is fixed at
+`<canonical-user-home>/.config/email-memory-store/`.
+
 ## Runtime Manifest
 
 `runtime.toml` is the only bundle file consumed directly by the public CLI and
-the MCP launcher. Its supported schema is:
+the MCP launcher. Deployment and scheduled operations load the complete bundle
+through the package's validated local-configuration profiles, while this
+schema-v2 manifest remains their centralized storage and executable authority.
+Its supported schema is:
 
 ```toml
 schema_version = 2
@@ -89,23 +98,55 @@ targets, or arbitrary extra keys to `runtime.toml`.
 ```json
 {
   "schema_version": 1,
-  "alert_destination": "local-reference-only",
+  "alert_destination": "telegram",
   "credential_reference": "local-reference-only",
   "fact_store_module_root": "/absolute/path/to/local-module-root",
-  "fact_store_provider": "local-reference-only"
+  "fact_store_provider": "email_memory_store.integrations.hermes_fact_store:MemoryStore"
 }
 ```
 
 `schema_version` is required and currently `1`; all other keys are optional.
-`alert_destination` and `credential_reference` are references, not credential
-values. Point them at an appropriate local secret or delivery mechanism; never
-place passwords, tokens, private keys, or message content in this file.
-`fact_store_module_root`, when present, is an absolute local path.
-`fact_store_provider`, when present, is a local provider reference.
+`alert_destination` is a generic transport selection and must be exactly one of
+`telegram`, `slack`, or `discord`; it is not an account, workspace, channel, or
+recipient identifier. `credential_reference` is a reference, not a credential
+value. Never place passwords, tokens, private keys, message content, or specific
+routing targets in this file. `fact_store_module_root`, when present, is an
+absolute local path. Setup derives the corresponding provider as the exact
+public adapter
+`email_memory_store.integrations.hermes_fact_store:MemoryStore`; arbitrary
+provider import paths are not accepted.
 
 Normal core runtime resolution does not consume this file. A local-only
-deployment attachment may explicitly load the complete bundle after validating
-its schema and permissions.
+integration may explicitly load it after validating its schema and permissions.
+The public deployment coordinator and packaged scheduler also load it through
+bounded package-owned profiles. A deployment requires a nonempty
+`credential_reference` as an audit reference, then separately proves actual
+mail authentication by proving that the policy-selected label is the mail
+connector's unique default account and then making a read-only default-account
+folder-list request. The reference itself is never treated as a credential or
+as proof of access.
+
+### Process visibility boundary
+
+Package-owned deployment and scheduler commands keep credentials, account
+labels and addresses, personal notification destinations, and complete folder
+policy arrays out of process arguments. They also select the owner-only runtime
+manifest through `EMAIL_MEMORY_STORE_RUNTIME_CONFIG`, not a command-line path.
+Scheduled connector calls rely on the verified default account, so its private
+label remains only in owner-readable configuration, process environment, and
+Python memory.
+
+The maintenance profile carries the exact include/exclude arrays as validated
+JSON environment values. Scheduled `nightly-update` consumes those arrays only
+after default-account verification and only when explicit interactive folder
+flags are absent; this preserves local folder scope without copying the policy
+into the package-owned command line.
+
+The third-party mail connector still requires per-operation folder names and
+message identifiers as command-line operands; its CLI provides no environment
+or standard-input form for those operands. On a multi-user host where local
+users are mutually untrusted, run email-memory under a dedicated OS account or
+configure the operating system to restrict cross-user process inspection.
 
 ## Local Policy
 
@@ -240,6 +281,31 @@ owner-only permission checks.
 Regeneration does not copy private values into the repository and does not
 modify runtime databases. Back up the bundle with local confidential-data
 procedures, not through a public source-control remote.
+
+## Deployment And Scheduler Profiles
+
+The package owns validated profiles for bootstrap, maintenance, cron, status,
+ingestion, triage, and related operations. They derive only the bounded
+environment variables each operation needs from `runtime.toml`,
+`private.env.json`, and `policy.json`.
+Ambient variables cannot override those loaded values. This makes the public
+deployment and scheduling scripts self-contained without a second path/provider
+configuration layer.
+
+Together, the cron and maintenance profiles resolve the configured account,
+alert reference, absolute Himalaya and Hermes executables, and runtime manifest;
+the hardened installed launcher supplies the release-local operational Python.
+The packaged launcher batches scheduled failure events by ISO week and sends
+them on the selected weekly alert day. A direct/manual maintenance run has no
+batch path and therefore sends operational alerts immediately.
+
+Hermes executable configuration authorizes only the email-memory operations
+implemented by the package, such as `hermes chat` and `hermes send`.
+Email-memory never controls the Hermes gateway lifecycle: it never starts,
+stops, restarts, reloads, signals, or supervises that process.
+
+See [Deployment](DEPLOYMENT.md) for how these profiles participate in staging,
+readiness checks, activation, scheduler installation, and automatic rollback.
 
 ## Operational Artifacts
 

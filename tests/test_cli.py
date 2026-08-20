@@ -79,8 +79,13 @@ def test_cli_supports_ingest_bodies_command():
         '--account', 'primary-account',
         '--email', 'user@example.test',
     ])
+    scheduled_nightly_args = parser.parse_args([
+        'nightly-update',
+        '--account', 'primary-account',
+    ])
     assert initial_args.command == 'initial-ingest'
     assert nightly_args.command == 'nightly-update'
+    assert scheduled_nightly_args.email is None
 
 
 def test_cli_supports_runtime_config_option():
@@ -171,6 +176,217 @@ def test_runtime_doctor_redacts_a_missing_manifest(tmp_path, monkeypatch, capsys
     }
     assert str(missing_manifest) not in captured.out
     assert captured.err == ""
+
+
+def test_nightly_update_reads_scheduled_email_from_environment(
+    tmp_path, monkeypatch
+):
+    captured: dict[str, object] = {}
+    resolved: dict[str, object] = {}
+    runtime_manifest = tmp_path / "private-runtime.toml"
+    monkeypatch.setenv("EMAIL_MEMORY_ACCOUNT_NAME", "private-account")
+    monkeypatch.setenv("EMAIL_MEMORY_ACCOUNT_EMAIL", "owner@example.test")
+    monkeypatch.setenv("EMAIL_MEMORY_STORE_RUNTIME_CONFIG", str(runtime_manifest))
+    monkeypatch.setenv("EMAIL_MEMORY_INTERNAL_VERIFIED_DEFAULT_ACCOUNT", "1")
+    monkeypatch.setenv(
+        "EMAIL_MEMORY_INCLUDE_FOLDERS_JSON",
+        json.dumps(["Private Inbox", "Private Archive"]),
+    )
+    monkeypatch.setenv(
+        "EMAIL_MEMORY_EXCLUDE_FOLDERS_JSON", json.dumps(["Private Trash"])
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "email-memory-store",
+        "nightly-update",
+    ])
+    def resolve(**kwargs):
+        resolved.update(kwargs)
+        return SimpleNamespace(
+            runtime_root=tmp_path,
+            work_root=None,
+            fact_store_db=None,
+            main_db=tmp_path / "main.duckdb",
+            entity_db=tmp_path / "entity.duckdb",
+            vector_store=tmp_path / "vectors",
+            work_db=None,
+            mail_client_executable=None,
+            hermes_executable=None,
+            codex_executable=None,
+            claude_executable=None,
+        )
+
+    monkeypatch.setattr(cli, "resolve_runtime_settings", resolve)
+    monkeypatch.setattr(
+        cli,
+        "cmd_nightly_update",
+        lambda args: captured.update(
+            account=args.account,
+            email=args.email,
+            include_folders=args.include_folders,
+            exclude_folders=args.exclude_folders,
+            verified_default=args._use_verified_default_account,
+        ),
+    )
+
+    cli.main()
+
+    assert captured == {
+        "account": "private-account",
+        "email": "owner@example.test",
+        "include_folders": ["Private Inbox", "Private Archive"],
+        "exclude_folders": ["Private Trash"],
+        "verified_default": True,
+    }
+    assert "private-account" not in sys.argv
+    assert "owner@example.test" not in sys.argv
+    assert str(runtime_manifest) not in sys.argv
+    assert "Private Inbox" not in sys.argv
+    assert "Private Archive" not in sys.argv
+    assert "Private Trash" not in sys.argv
+    assert resolved["runtime_config"] is None
+
+
+def test_nightly_update_requires_explicit_or_scheduled_email(monkeypatch, capsys):
+    monkeypatch.setenv("EMAIL_MEMORY_ACCOUNT_NAME", "private-account")
+    monkeypatch.delenv("EMAIL_MEMORY_ACCOUNT_EMAIL", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "email-memory-store",
+        "nightly-update",
+    ])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+
+    assert error.value.code == 2
+    assert "EMAIL_MEMORY_ACCOUNT_EMAIL" in capsys.readouterr().err
+
+
+def test_nightly_update_requires_explicit_or_scheduled_account(monkeypatch, capsys):
+    monkeypatch.delenv("EMAIL_MEMORY_ACCOUNT_NAME", raising=False)
+    monkeypatch.setenv("EMAIL_MEMORY_ACCOUNT_EMAIL", "owner@example.test")
+    monkeypatch.setattr(sys, "argv", ["email-memory-store", "nightly-update"])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert "EMAIL_MEMORY_ACCOUNT_NAME" in captured.err
+    assert "owner@example.test" not in captured.err
+
+
+def test_mail_client_uses_default_only_after_internal_scheduled_verification(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        cli.HimalayaClient,
+        "_run",
+        lambda self, args: '[{"name":"scheduled","default":true}]',
+    )
+    direct = cli._mail_client(
+        SimpleNamespace(
+            mail_client_executable=Path("/bin/true"),
+            account="explicit-nondefault",
+            command="nightly-update",
+            _use_verified_default_account=False,
+        )
+    )
+    scheduled = cli._mail_client(
+        SimpleNamespace(
+            mail_client_executable=Path("/bin/true"),
+            account="scheduled",
+            command="nightly-update",
+            _use_verified_default_account=True,
+        )
+    )
+
+    assert direct.use_default_account is False
+    assert scheduled.use_default_account is True
+
+
+def test_forged_internal_default_flag_fails_before_store_open(
+    monkeypatch,
+):
+    connector_calls: list[list[str]] = []
+    store_opened = False
+
+    def connector_response(_self, args):
+        connector_calls.append(args)
+        return '[{"name":"actual-default","default":true}]'
+
+    def unexpected_store_open(_args):
+        nonlocal store_opened
+        store_opened = True
+        raise AssertionError("store must not open before account proof")
+
+    monkeypatch.setattr(cli.HimalayaClient, "_run", connector_response)
+    monkeypatch.setattr(cli, "_open_store", unexpected_store_open)
+    args = SimpleNamespace(
+        mail_client_executable=Path("/bin/true"),
+        account="forged-nondefault",
+        _use_verified_default_account=True,
+    )
+
+    with pytest.raises(
+        ValueError, match="mail connector default account verification failed"
+    ) as error:
+        cli.cmd_nightly_update(args)
+
+    assert connector_calls == [["account", "list", "--output", "json"]]
+    assert "forged-nondefault" not in str(error.value)
+    assert "actual-default" not in str(error.value)
+    assert store_opened is False
+
+
+def test_explicit_nightly_account_cannot_be_reclassified_as_verified_default(
+    tmp_path, monkeypatch
+):
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("EMAIL_MEMORY_INTERNAL_VERIFIED_DEFAULT_ACCOUNT", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "email-memory-store",
+            "nightly-update",
+            "--account",
+            "explicit-nondefault",
+            "--email",
+            "owner@example.test",
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "resolve_runtime_settings",
+        lambda **_kwargs: SimpleNamespace(
+            runtime_root=tmp_path,
+            work_root=None,
+            fact_store_db=None,
+            main_db=tmp_path / "main.duckdb",
+            entity_db=tmp_path / "entity.duckdb",
+            vector_store=tmp_path / "vectors",
+            work_db=None,
+            mail_client_executable=Path("/bin/true"),
+            hermes_executable=None,
+            codex_executable=None,
+            claude_executable=None,
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "cmd_nightly_update",
+        lambda args: captured.update(
+            account=args.account,
+            verified_default=args._use_verified_default_account,
+        ),
+    )
+
+    cli.main()
+
+    assert captured == {
+        "account": "explicit-nondefault",
+        "verified_default": False,
+    }
 
 
 def test_runtime_doctor_requires_the_persisted_selected_llm(tmp_path, capsys):

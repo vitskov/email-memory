@@ -76,8 +76,20 @@ def build_parser() -> argparse.ArgumentParser:
     initial_ingest_parser.set_defaults(handler=cmd_initial_ingest)
 
     nightly_update_parser = subparsers.add_parser('nightly-update')
-    nightly_update_parser.add_argument('--account', required=True)
-    nightly_update_parser.add_argument('--email', required=True)
+    nightly_update_parser.add_argument(
+        '--account',
+        help=(
+            'mail connector account; scheduled deployments may provide '
+            'EMAIL_MEMORY_ACCOUNT_NAME instead'
+        ),
+    )
+    nightly_update_parser.add_argument(
+        '--email',
+        help=(
+            'account address; scheduled deployments may provide '
+            'EMAIL_MEMORY_ACCOUNT_EMAIL instead'
+        ),
+    )
     nightly_update_parser.add_argument('--include-folder', action='append', dest='include_folders')
     nightly_update_parser.add_argument('--exclude-folder', action='append', dest='exclude_folders')
     nightly_update_parser.add_argument('--page-size', type=int, default=100)
@@ -316,7 +328,31 @@ def _mail_client(args: argparse.Namespace) -> HimalayaClient:
     executable = getattr(args, 'mail_client_executable', None)
     if executable is None:
         raise ValueError('the mail client executable is not configured')
-    return HimalayaClient(binary=str(executable))
+    use_default_account = bool(
+        getattr(args, '_use_verified_default_account', False)
+    )
+    client = HimalayaClient(
+        binary=str(executable),
+        use_default_account=use_default_account,
+    )
+    if use_default_account:
+        client.require_unique_default_account(str(args.account))
+    return client
+
+
+def _scheduled_folder_policy(
+    parser: argparse.ArgumentParser, variable: str
+) -> list[str]:
+    raw = os.environ.get(variable)
+    try:
+        value = json.loads(raw) if raw is not None else None
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        parser.error(f'nightly-update requires valid {variable}')
+    return [item.strip() for item in value]
 
 
 def _runtime_llm_spec(args: argparse.Namespace, spec: LLMProviderSpec) -> LLMProviderSpec:
@@ -491,9 +527,9 @@ def cmd_initial_ingest(args: argparse.Namespace) -> None:
 
 
 def cmd_nightly_update(args: argparse.Namespace) -> None:
+    client = _mail_client(args)
     store = _open_store(args)
     _pre_flight_index_repair(store)
-    client = _mail_client(args)
     started_at = _utc_now_iso()
     vector_store = _open_vector_store(_vector_store_path(args)) if getattr(args, 'embed', False) else None
     try:
@@ -1443,6 +1479,37 @@ def cmd_extraction_status(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == 'nightly-update':
+        account_from_environment = not bool(args.account)
+        if not args.account:
+            args.account = os.environ.get('EMAIL_MEMORY_ACCOUNT_NAME')
+        if not args.account or not args.account.strip():
+            parser.error(
+                'nightly-update requires --account or EMAIL_MEMORY_ACCOUNT_NAME'
+            )
+        args.account = args.account.strip()
+        if not args.email:
+            args.email = os.environ.get('EMAIL_MEMORY_ACCOUNT_EMAIL')
+        if not args.email or not args.email.strip():
+            parser.error(
+                'nightly-update requires --email or EMAIL_MEMORY_ACCOUNT_EMAIL'
+            )
+        args.email = args.email.strip()
+        args._use_verified_default_account = bool(
+            account_from_environment
+            and os.environ.get(
+                'EMAIL_MEMORY_INTERNAL_VERIFIED_DEFAULT_ACCOUNT'
+            ) == '1'
+        )
+        if args._use_verified_default_account:
+            if args.include_folders is None:
+                args.include_folders = _scheduled_folder_policy(
+                    parser, 'EMAIL_MEMORY_INCLUDE_FOLDERS_JSON'
+                )
+            if args.exclude_folders is None:
+                args.exclude_folders = _scheduled_folder_policy(
+                    parser, 'EMAIL_MEMORY_EXCLUDE_FOLDERS_JSON'
+                )
     try:
         runtime = resolve_runtime_settings(
             runtime_root=args.root,

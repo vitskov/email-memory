@@ -49,6 +49,75 @@ def test_remove_flags_uses_himalaya_flag_remove(monkeypatch):
     ]]
 
 
+def test_default_account_mode_omits_private_account_from_every_connector_argv(
+    monkeypatch,
+):
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, text, capture_output, check, timeout):
+        calls.append(args)
+        if args[1:3] == ['folder', 'list']:
+            stdout = b'| NAME | FLAGS |\n| INBOX | inbox |\n'
+        elif args[1:3] == ['envelope', 'list']:
+            stdout = b'[]'
+        else:
+            stdout = b''
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=stdout, stderr=b''
+        )
+
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    client = HimalayaClient(binary='himalaya', use_default_account=True)
+    private_account = 'private-account-label'
+
+    client.list_folders(private_account)
+    client.list_envelopes(private_account, folder='INBOX')
+    client.export_message(private_account, '42', folder='INBOX')
+    client.remove_flags(
+        account=private_account,
+        folder='INBOX',
+        message_ids=['42'],
+        flags=['seen'],
+    )
+
+    assert len(calls) == 4
+    for argv in calls:
+        assert private_account not in argv
+        assert '-a' not in argv
+        assert '--account' not in argv
+
+
+def test_explicit_nondefault_account_preserves_connector_override(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(args, *, text, capture_output, check, timeout):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout=b'[]', stderr=b''
+        )
+
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+    client = HimalayaClient(binary='himalaya')
+
+    client.list_envelopes('explicit-nondefault', folder='INBOX')
+
+    assert calls == [[
+        'himalaya',
+        'envelope',
+        'list',
+        '-a',
+        'explicit-nondefault',
+        '-f',
+        'INBOX',
+        '-p',
+        '1',
+        '-s',
+        '100',
+        '-o',
+        'json',
+    ]]
+
+
 # ---------------------------------------------------------------------------
 # error classification and retry policy
 # ---------------------------------------------------------------------------

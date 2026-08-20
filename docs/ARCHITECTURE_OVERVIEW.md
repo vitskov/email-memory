@@ -38,10 +38,11 @@ The local runtime is selected explicitly at process start. It contains:
 - optional transient working database location
 - exact main, entity, optional work, fact-store, and vector-store locations
 
-Separate local deployment configuration manages connector credentials, connection
-profiles, scheduling, notifications, and any external fact-store integration.
-Those settings are not part of the package runtime-manifest schema and are never
-read from the checkout by default.
+The package-owned local configuration bundle manages credential references,
+connection policy, scheduling notification references, and optional fact-store
+integration. Private values remain outside the runtime-manifest schema and the
+checkout, while validated package profiles expose only the bounded fields needed
+by deployment and scheduled operations.
 
 ### Runtime resolution
 
@@ -121,9 +122,43 @@ These paths are runtime data and must be excluded from a public source archive.
 ## Operational Model
 
 The command-line application is intentionally local. It does not discover data
-sources or runtime directories on its own beyond the generic XDG fallback. A
-deployment wrapper may provide environment variables, a runtime manifest, and
-connector setup, but that wrapper belongs in local-only operations material.
+sources or runtime directories on its own beyond the generic XDG fallback. The
+public package owns the transactional deployment coordinator, immutable release
+provisioner, MCP launcher, nightly maintenance pipeline, cron launcher, and
+weekly alert batching. These operations load the owner-only local bundle; they
+do not encode local values in the public scripts.
+
+The transactional deploy and scheduler installation path is Linux-only today
+because its trust and atomicity checks rely on GNU coreutils semantics and
+`crontab`. Cross-platform accelerator support in the lower-level package
+bootstrap does not change that deployment boundary.
+
+Production deployment derives fixed configuration, data, and state roots from
+the invoking user's canonical passwd home. It rejects ambient `HOME`/XDG roots
+and a custom deployment root, preventing MCP and cron from resolving a different
+release than the coordinator and doctor.
+
+Deployment stages a release-local Python 3.14 environment and wheel under an
+immutable versioned directory. It verifies the schema-v2 manifest, database and
+runtime doctor, real mail authentication, selected LLM, MCP startup, maintenance
+preflight, MCP launcher, and managed scheduler before atomically replacing the
+`current` pointer. A redacted readiness receipt binds those checks to the active
+release identity. The receipt lives inside the immutable candidate, so the
+receipt and installed code become authoritative through the same atomic
+`current` update. Transaction failures attempt to restore the prior active
+release, MCP pointers, and crontab independently.
+
+All installed entry points resolve code through the active release while exact
+storage and executable locations come from the centralized schema-v2 manifest.
+This preserves a stable operational surface without mutating an environment in
+place or coupling durable data to package upgrades.
+
+Hermes may be a configured LLM and notification executable, but email-memory
+never controls the Hermes gateway lifecycle: it does not start, stop, restart,
+reload, signal, or supervise that process.
+
+See [Deployment](DEPLOYMENT.md) for the public transaction and operational
+layout.
 
 Commands that change stored data are explicit. Maintenance and recovery commands
 report their work, and destructive cleanup requires an apply flag. The core keeps
@@ -142,8 +177,9 @@ A publishable tree must satisfy all of the following:
 
 - no runtime databases, raw messages, indexes, caches, reports, or generated
   state
-- no credentials, connection profiles, local runtime manifests, or deployment
-  wrappers
+- no credentials, connection profiles, or local runtime manifests
+- only generic package-owned deployment and scheduling scripts, with no local
+  paths, identities, destinations, or operational history
 - no personal identifiers, source-specific names, routing destinations, or local
   machine paths
 - no production fixtures or operational history

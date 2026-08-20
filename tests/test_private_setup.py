@@ -9,6 +9,7 @@ import pytest
 
 import email_memory_store.tui.private_setup as private_setup
 from email_memory_store.tui.private_setup import (
+    FACT_STORE_PROVIDER,
     PrivateSetupApp,
     PrivateSetupValues,
     load_private_setup,
@@ -30,12 +31,12 @@ def _values(**changes: str) -> PrivateSetupValues:
         "codex_executable": "/bin/true",
         "claude_executable": "/bin/true",
         "fact_store_module_root": "/opt/local-facts",
-        "fact_store_provider": "local-fact-provider",
+        "fact_store_provider": "",
         "account_label": "primary",
         "account_email": "person@example.test",
         "include_folders": "Inbox, Archive/Projects",
         "exclude_folders": "Junk",
-        "alert_destination": "local-alert-reference",
+        "alert_destination": "telegram",
         "credential_reference": "keyring:mailbox",
     }
     values.update(changes)
@@ -77,10 +78,10 @@ def test_write_private_setup_creates_separate_owner_only_artifacts(tmp_path):
         },
     }
     assert json.loads(paths.private_env.read_text(encoding="utf-8")) == {
-        "alert_destination": "local-alert-reference",
+        "alert_destination": "telegram",
         "credential_reference": "keyring:mailbox",
         "fact_store_module_root": "/opt/local-facts",
-        "fact_store_provider": "local-fact-provider",
+        "fact_store_provider": FACT_STORE_PROVIDER,
         "schema_version": 1,
     }
     assert json.loads(paths.policy.read_text(encoding="utf-8")) == {
@@ -271,6 +272,43 @@ async def test_private_setup_app_starts(tmp_path):
     app = PrivateSetupApp(config_home=tmp_path)
     async with app.run_test():
         assert app.query_one("#runtime-root", Input) is not None
+        assert not app.query("#fact-store-provider")
+
+
+def test_private_setup_derives_the_public_fact_store_provider(tmp_path):
+    paths = write_private_setup(
+        _values(fact_store_provider=""), config_home=tmp_path
+    )
+
+    private_env = json.loads(paths.private_env.read_text(encoding="utf-8"))
+    assert private_env["fact_store_provider"] == FACT_STORE_PROVIDER
+
+
+def test_private_setup_rejects_an_arbitrary_fact_store_provider():
+    provider = "private_adapter.module:Store"
+
+    with pytest.raises(ValueError, match="fact-store provider is unsupported") as captured:
+        validate_private_setup(_values(fact_store_provider=provider))
+    assert provider not in str(captured.value)
+
+
+def test_private_setup_rejects_an_arbitrary_alert_target_without_disclosing_it():
+    target = "telegram" + ":" + "private-route"
+
+    with pytest.raises(ValueError, match="alert destination is unsupported") as captured:
+        validate_private_setup(_values(alert_destination=target))
+    assert target not in str(captured.value)
+
+
+def test_private_setup_supports_disabled_fact_integration(tmp_path):
+    paths = write_private_setup(
+        _values(fact_store_module_root="", fact_store_provider=""),
+        config_home=tmp_path,
+    )
+
+    private_env = json.loads(paths.private_env.read_text(encoding="utf-8"))
+    assert "fact_store_module_root" not in private_env
+    assert "fact_store_provider" not in private_env
 
 
 @pytest.mark.asyncio

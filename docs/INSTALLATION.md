@@ -21,7 +21,10 @@ fixtures before any private attachment exists.
 
 - Git
 - `uv >= 0.12.5`
-- A supported operating system for the locked binary dependencies
+- Linux for the transactional `deploy.sh` workflow, including GNU coreutils and
+  `crontab`
+- A supported operating system for the standalone package bootstrap and locked
+  binary dependencies
 - Local mail and model connectors only when their corresponding workflows are
   used
 
@@ -63,19 +66,30 @@ themselves and do not receive the repository's exact transitive dependency
 graph. Development tools (`pytest`, `pytest-asyncio`, `ruff`, and `mypy`) are in
 the `dev` extra and are also locked.
 
-## Clone And Bootstrap
+## Clone And Deploy
 
-For a runtime installation:
+For a typical runtime installation from a clean public clone:
 
 ```bash
 git clone https://github.com/vitskov/email-memory.git
 cd email-memory
-./scripts/bootstrap.sh
+./scripts/deploy.sh --accelerator auto
 ```
 
-The default `--accelerator auto` mode selects an Apple MPS device on Apple
-silicon macOS, an NVIDIA CUDA build only when `nvidia-smi` confirms a usable GPU
-and driver, and CPU otherwise. Override the decision when provisioning:
+This is the supported end-to-end path. It stages an immutable release-local
+Python 3.14 environment, creates or validates the schema-v2 local configuration,
+proves real mail authentication, installs the package-owned MCP and scheduler
+integration, writes a redacted readiness receipt, and atomically updates the
+active `current` pointer. See [Deployment](DEPLOYMENT.md) for the transaction,
+doctor, automatic rollback, weekly alert batching, and lifecycle boundaries.
+
+For the Linux-only transactional deployment, the default `--accelerator auto`
+mode selects an NVIDIA CUDA build only when `nvidia-smi` confirms a usable GPU
+and driver, and CPU otherwise. Override the Linux deployment decision with
+`--accelerator cpu` or `--accelerator cuda`.
+
+The standalone package bootstrap also supports Apple MPS on Apple silicon
+macOS:
 
 ```bash
 ./scripts/bootstrap.sh --accelerator cpu
@@ -84,14 +98,16 @@ and driver, and CPU otherwise. Override the decision when provisioning:
 ```
 
 Explicit `cuda` and `mps` selections fail closed when the requested device is
-unavailable. CUDA mode keeps the project versions pinned by `uv.lock` while
+unavailable. MPS support here does not make transactional `deploy.sh` a macOS
+workflow. CUDA mode keeps the project versions pinned by `uv.lock` while
 using `uv pip --torch-backend auto` to choose the driver-compatible official
 PyTorch wheel. MPS uses the standard macOS PyTorch wheel. The verified result is
 recorded at `<environment>/share/email-memory-store/accelerator.json`; the
 embedding runtime reads that receipt and selects the same device. The receipt
 contains only the backend, device, and PyTorch version.
 
-The script performs these fail-closed steps:
+The underlying package bootstrap performs these fail-closed steps for each
+staged release:
 
 1. verifies `uv` is available and satisfies the project requirement;
 2. installs a managed Python 3.14 interpreter;
@@ -101,10 +117,14 @@ The script performs these fail-closed steps:
 6. imports the package and smoke-tests both console entry points;
 7. records the verified accelerator selection inside the environment.
 
-The default runtime environment is `.venv`, which is ignored by Git and contains
-no runtime data or credentials. Runtime mode installs a non-editable build, so
-subsequent checkout edits cannot change the installed code. `--dev` intentionally
-uses an editable install for contributor iteration.
+`deploy.sh` places each environment beneath the canonical account-home data
+root (`.local/share/email-memory-store`) and installs a non-editable wheel, so
+checkout edits cannot change active code. Production deployment rejects ambient
+`HOME`/XDG root changes and a custom deployment root.
+`bootstrap.sh` remains the contributor and standalone package-bootstrap tool;
+its default `.venv` is ignored by Git and contains no runtime data or
+credentials. `--dev` intentionally uses an editable install for contributor
+iteration.
 
 For development:
 
@@ -115,7 +135,9 @@ For development:
 
 ## Local Configuration
 
-Create the owner-only configuration bundle with the installed CLI:
+When configuration is missing, `deploy.sh` opens the installed setup interface
+and writes beneath the canonical account home's `.config/email-memory-store`
+directory. To create it separately with a development environment:
 
 ```bash
 ./.venv/bin/email-memory-store setup-private
@@ -145,7 +167,9 @@ intentionally not inferred from the checkout or rediscovered from `PATH`.
 
 ## MCP Registration
 
-Register the installed executable and pass the runtime manifest explicitly:
+The recommended deployment installs the stable package-owned launcher and
+verifies it before activation. For a standalone package bootstrap, register the
+installed executable and pass the runtime manifest explicitly:
 
 ```text
 /absolute/path/to/email-memory/.venv/bin/email-memory-store-mcp
@@ -160,6 +184,10 @@ Email-memory installation and upgrade scripts must never stop, restart, reload,
 signal, or otherwise control the host application. Reconnect through the host's
 documented user-facing MCP operation.
 
+In particular, email-memory never controls the Hermes gateway lifecycle. It may
+invoke configured Hermes chat and send commands, but gateway ownership remains
+outside this package.
+
 ## Upgrade
 
 Review dependency upgrades separately from ordinary source updates:
@@ -167,11 +195,13 @@ Review dependency upgrades separately from ordinary source updates:
 ```bash
 git pull --ff-only
 uv lock --check
-./scripts/bootstrap.sh
+./scripts/deploy.sh --accelerator auto
 ./scripts/run_ci_locally.sh
 ```
 
-`bootstrap.sh` uses `uv sync --locked --no-editable`, so it refuses a checkout
+The deployment stages and verifies a new immutable release before changing
+`current`; a failure automatically restores the prior active, MCP, and scheduler
+state. `bootstrap.sh` uses `uv sync --locked --no-editable`, so it refuses a checkout
 whose package metadata and lock disagree and does not couple the installed code
 to the checkout. Maintainers intentionally refresh dependencies with
 `uv lock --upgrade`, run all checks on Python 3.14, review the lock diff, and

@@ -54,6 +54,7 @@ email_memory_store = [
   "promotion/**/*.txt",
   "promotion/**/*.json",
   "tui/*.tcss",
+  "deployment/scripts/*.sh",
 ]
 
 [tool.pytest.ini_options]

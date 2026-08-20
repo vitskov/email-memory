@@ -120,6 +120,7 @@ class HimalayaClient:
         retry_delay: float = 2.0,
         max_retry_delay: float = 30.0,
         command_timeout_seconds: float = 60.0,
+        use_default_account: bool = False,
     ):
         self.binary = binary
         self.retries = max(1, retries)
@@ -128,6 +129,13 @@ class HimalayaClient:
         if command_timeout_seconds <= 0:
             raise ValueError('command_timeout_seconds must be positive')
         self.command_timeout_seconds = command_timeout_seconds
+        self.use_default_account = use_default_account
+
+    def _account_args(self, account: str) -> list[str]:
+        """Keep the logical account in Python while optionally omitting it from argv."""
+        if not account.strip():
+            raise ValueError('account must be a non-empty string')
+        return [] if self.use_default_account else ['-a', account]
 
     def _sleep_for_attempt(self, attempt: int) -> None:
         """Exponential backoff, capped.
@@ -138,6 +146,31 @@ class HimalayaClient:
         """
         delay = min(self.retry_delay * (2 ** (attempt - 1)), self.max_retry_delay)
         time.sleep(delay)
+
+    def require_unique_default_account(self, account: str) -> None:
+        """Fail unless ``account`` is the connector's one and only default."""
+        if not account.strip():
+            raise ValueError('mail connector default account verification failed')
+        try:
+            payload = json.loads(
+                self._run(['account', 'list', '--output', 'json'])
+            )
+        except (json.JSONDecodeError, subprocess.SubprocessError) as error:
+            raise ValueError(
+                'mail connector default account verification failed'
+            ) from error
+        if not isinstance(payload, list):
+            raise ValueError('mail connector default account verification failed')
+        records = [item for item in payload if isinstance(item, dict)]
+        selected = [item for item in records if item.get('name') == account]
+        defaults = [item for item in records if item.get('default') is True]
+        if (
+            len(records) != len(payload)
+            or len(selected) != 1
+            or len(defaults) != 1
+            or selected[0] is not defaults[0]
+        ):
+            raise ValueError('mail connector default account verification failed')
 
     def _run(self, args: list[str]) -> str:
         last_error: subprocess.CalledProcessError | None = None
@@ -181,7 +214,9 @@ class HimalayaClient:
         raise RuntimeError('unreachable himalaya command runner state')
 
     def list_folders(self, account: str) -> list[str]:
-        return parse_folder_list_output(self._run(['folder', 'list', '-a', account]))
+        return parse_folder_list_output(
+            self._run(['folder', 'list', *self._account_args(account)])
+        )
 
     def list_envelopes(
         self,
@@ -192,7 +227,7 @@ class HimalayaClient:
     ) -> list[HimalayaEnvelope]:
         output = self._run([
             'envelope', 'list',
-            '-a', account,
+            *self._account_args(account),
             '-f', folder,
             '-p', str(page),
             '-s', str(page_size),
@@ -202,7 +237,11 @@ class HimalayaClient:
         return [HimalayaEnvelope.from_json(item) for item in payload]
 
     def export_message(self, account: str, message_id: str, folder: str = 'INBOX', full: bool = True) -> str:
-        args = ['message', 'export', '-a', account, '-f', folder, message_id]
+        args = [
+            'message', 'export',
+            *self._account_args(account),
+            '-f', folder, message_id,
+        ]
         if full:
             args.append('--full')
         return self._run(args)
@@ -217,4 +256,10 @@ class HimalayaClient:
     ) -> str:
         if not message_ids or not flags:
             return ''
-        return self._run(['flag', 'remove', '-a', account, '-f', folder, *message_ids, *flags])
+        return self._run([
+            'flag', 'remove',
+            *self._account_args(account),
+            '-f', folder,
+            *message_ids,
+            *flags,
+        ])
