@@ -5,6 +5,7 @@ from typing import Any
 
 import duckdb
 
+from .db_rows import require_scalar
 from .entity_schema import ENTITY_SCHEMA_SQL
 
 
@@ -55,7 +56,7 @@ class EntityMemoryStore:
                 "UPDATE people SET disambiguation_status = 'ambiguous', updated_at = CURRENT_TIMESTAMP WHERE normalized_name = ?",
                 [normalized_name],
             )
-        return int(inserted[0]), canonical_name
+        return int(require_scalar(inserted, operation='create person')), canonical_name
 
     def ensure_person_alias(self, person_id: int, alias_name: str | None) -> None:
         if not alias_name:
@@ -359,7 +360,7 @@ class EntityMemoryStore:
             """,
             [new_canonical_name, normalize_person_name(new_canonical_name), organization_hint],
         ).fetchone()
-        new_person_id = int(inserted[0])
+        new_person_id = int(require_scalar(inserted, operation='split person'))
         for email_address in email_addresses:
             normalized_email = email_address.lower()
             self.conn.execute("UPDATE person_emails SET person_id = ? WHERE email_address = ?", [new_person_id, normalized_email])
