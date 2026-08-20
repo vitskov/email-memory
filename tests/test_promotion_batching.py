@@ -1,8 +1,40 @@
 from pathlib import Path
 
+import pytest
+
 from email_memory_store.store import EmailMemoryStore
 from email_memory_store.promotion.llm import load_soul_text, render_batch_prompt
 from email_memory_store.promotion.service import EmailPromotionService
+
+
+def _promotion_service_with_export_item() -> EmailPromotionService:
+    service = EmailPromotionService.__new__(EmailPromotionService)
+    service.select_fact_store_promotions = lambda limit=20: [  # type: ignore[method-assign]
+        {'fact_store_payload': {'content': 'synthetic private export content'}}
+    ][:limit]
+    return service
+
+
+def test_fact_store_export_is_owner_only(tmp_path: Path) -> None:
+    output = tmp_path / 'private-export' / 'batch.json'
+
+    _promotion_service_with_export_item().export_fact_store_batch(output_path=output)
+
+    assert output.parent.stat().st_mode & 0o777 == 0o700
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert 'synthetic private export content' in output.read_text(encoding='utf-8')
+
+
+def test_fact_store_export_refuses_symlink_targets(tmp_path: Path) -> None:
+    target = tmp_path / 'target.json'
+    target.write_text('original\n', encoding='utf-8')
+    output = tmp_path / 'batch.json'
+    output.symlink_to(target)
+
+    with pytest.raises(ValueError, match='symbolic links'):
+        _promotion_service_with_export_item().export_fact_store_batch(output_path=output)
+
+    assert target.read_text(encoding='utf-8') == 'original\n'
 
 
 def _add_threaded_decision(

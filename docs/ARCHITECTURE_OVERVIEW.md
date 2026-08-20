@@ -76,7 +76,9 @@ The runtime filesystem also holds:
 
 - `raw/` for locally retained message artifacts
 - `cache/` for intermediary files
-- `reports/` for generated operational output
+- `reports/` for owner-only generated operational output; local launchers use
+  the packaged structured-artifact boundary rather than persisting raw command
+  streams
 - `config/promotion/` for runtime-local copies of customizable packaged assets
 - persistent vector-index data colocated with the selected runtime
 
