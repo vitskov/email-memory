@@ -142,3 +142,11 @@ A publishable tree must satisfy all of the following:
 
 The publishing process must validate these invariants against both the Git object
 graph and a clean archive before a public push.
+
+Enforcement is deliberately split. Hosted CI applies generic value-free rules
+to tracked content, reachable history, the source archive, and built
+distributions. A local-only release gate applies an ignored deployment-specific
+denylist to the candidate repository and its complete reachable history. This
+keeps exact private identifiers out of the public repository while still making
+their absence a release requirement. See
+[Privacy release controls](PRIVACY_RELEASE_CONTROLS.md).
