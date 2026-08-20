@@ -541,6 +541,42 @@ def _body_sync_status(*, envelopes: list[Any], page_size: int, body_result: dict
     return 'in_progress'
 
 
+def _complete_initial_body_cursor_if_reconciled(
+    *,
+    store: EmailMemoryStore,
+    account_name: str,
+    folder_name: str,
+    final_page: int,
+) -> None:
+    """Close the body cursor once an exact-page-boundary scan reaches its end.
+
+    A full final envelope page initially leaves the body cursor resumable.  The
+    following empty/out-of-range page proves the scan is complete.  A partial
+    cursor remains partial while its retry queue still contains work.
+    """
+    state = store.get_ingest_sync_state(
+        account_name=account_name,
+        folder_name=folder_name,
+        sync_kind='initial_bodies',
+    )
+    if state is None:
+        return
+    if state.get('status') == 'partial' and store.list_failed_message_ingestions(
+        account_name=account_name,
+        folders=[folder_name],
+        limit=1,
+    ):
+        return
+    store.upsert_ingest_sync_state(
+        account_name=account_name,
+        folder_name=folder_name,
+        sync_kind='initial_bodies',
+        next_page=final_page,
+        last_completed_page=final_page - 1 if final_page > 1 else None,
+        status='complete',
+    )
+
+
 def run_initial_ingestion(
     *,
     store: EmailMemoryStore,
@@ -583,7 +619,7 @@ def run_initial_ingestion(
             try:
                 envelopes = client.list_envelopes(account=account_name, folder=folder, page=current_page, page_size=page_size)
             except subprocess.CalledProcessError as exc:
-                if current_page > 1:
+                if current_page > 1 and is_page_out_of_bounds(exc):
                     store.upsert_ingest_sync_state(
                         account_name=account_name,
                         folder_name=folder,
@@ -591,6 +627,12 @@ def run_initial_ingestion(
                         next_page=current_page,
                         last_completed_page=current_page - 1,
                         status='complete',
+                    )
+                    _complete_initial_body_cursor_if_reconciled(
+                        store=store,
+                        account_name=account_name,
+                        folder_name=folder,
+                        final_page=current_page,
                     )
                     break
                 raise exc
@@ -602,6 +644,12 @@ def run_initial_ingestion(
                     next_page=current_page,
                     last_completed_page=current_page - 1 if current_page > 1 else None,
                     status='complete',
+                )
+                _complete_initial_body_cursor_if_reconciled(
+                    store=store,
+                    account_name=account_name,
+                    folder_name=folder,
+                    final_page=current_page,
                 )
                 break
             result = ingest_envelopes(
@@ -758,7 +806,9 @@ def run_nightly_update(
                 sync_kind='nightly_bodies',
                 next_page=1,
                 last_completed_page=current_page,
-                status=body_status if len(envelopes) >= page_size else ('complete' if body_status != 'partial' else 'partial'),
+                # Nightly scans intentionally restart from page 1 each run.
+                # Completing the bounded scan is not a resumable initial scan.
+                status='partial' if body_status == 'partial' else 'complete',
             )
             if len(envelopes) < page_size:
                 break
@@ -869,7 +919,7 @@ def run_rfc_metadata_backfill(
             try:
                 envelopes = client.list_envelopes(account=account_name, folder=folder, page=current_page, page_size=page_size)
             except subprocess.CalledProcessError as exc:
-                if current_page > 1:
+                if current_page > 1 and is_page_out_of_bounds(exc):
                     store.upsert_ingest_sync_state(
                         account_name=account_name,
                         folder_name=folder,
@@ -1016,7 +1066,7 @@ def run_ingestion_state_repair(
             try:
                 envelopes = client.list_envelopes(account=account_name, folder=folder, page=current_page, page_size=page_size)
             except subprocess.CalledProcessError as exc:
-                if current_page > 1:
+                if current_page > 1 and is_page_out_of_bounds(exc):
                     store.upsert_ingest_sync_state(
                         account_name=account_name,
                         folder_name=folder,

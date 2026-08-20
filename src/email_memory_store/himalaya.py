@@ -108,7 +108,8 @@ def is_page_out_of_bounds(exc: subprocess.CalledProcessError) -> bool:
     a full final page, so the caller cannot tell it has finished without asking
     for one more page and getting this back.
     """
-    return 'out of bounds' in himalaya_stderr(exc).lower()
+    text = himalaya_stderr(exc).lower()
+    return 'out of bounds' in text or 'out of range' in text
 
 
 class HimalayaClient:

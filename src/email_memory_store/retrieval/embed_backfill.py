@@ -458,6 +458,7 @@ def backfill_all(
     funcs: list[tuple[str, Callable[..., int]]] = [
         ("action_items", backfill_action_items),
         ("deadlines", backfill_deadlines),
+        ("calendar_events", backfill_calendar_events),
         ("decisions", backfill_decisions),
         ("thread_summaries", backfill_thread_summaries),
         ("message_chunks", backfill_message_chunks),

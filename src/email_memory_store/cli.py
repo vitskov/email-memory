@@ -108,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
     repair_parser.add_argument('--max-pages-per-folder', type=int, default=10)
     repair_parser.set_defaults(handler=cmd_repair_ingestion_state)
 
+    reconcile_cursors_parser = subparsers.add_parser('reconcile-ingestion-cursors')
+    reconcile_cursors_parser.add_argument('--apply', action='store_true')
+    reconcile_cursors_parser.set_defaults(handler=cmd_reconcile_ingestion_cursors)
+
     thread_lineage_parser = subparsers.add_parser('thread-lineage')
     thread_lineage_parser.add_argument('--thread-key', action='append', dest='thread_keys', required=True)
     thread_lineage_parser.set_defaults(handler=cmd_thread_lineage)
@@ -601,6 +605,15 @@ def cmd_repair_ingestion_state(args: argparse.Namespace) -> None:
         _record_ingestion_report(store, command='repair-ingestion-state', started_at=started_at, error=str(exc))
         _maybe_checkpoint(store, args)
         raise
+    finally:
+        store.close()
+
+
+def cmd_reconcile_ingestion_cursors(args: argparse.Namespace) -> None:
+    store = _open_store(args)
+    try:
+        result = store.reconcile_ingest_sync_cursors(apply=args.apply)
+        print(json.dumps(result, indent=2, default=str))
     finally:
         store.close()
 

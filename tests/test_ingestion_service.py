@@ -927,6 +927,52 @@ def test_initial_ingestion_persists_separate_body_sync_state(tmp_path: Path):
     store.close()
 
 
+def test_initial_ingestion_completes_body_cursor_after_exact_page_boundary(tmp_path: Path):
+    store = EmailMemoryStore(tmp_path / 'email_memory')
+    store.initialize(start_date='2022-01-02')
+
+    run_initial_ingestion(
+        store=store,
+        client=PagedHimalayaClient(),
+        account_name='primary-account',
+        email_address='user@example.test',
+        include_folders=['projects'],
+        page_size=1,
+        max_pages_per_folder=2,
+    )
+
+    body_state = store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='projects', sync_kind='initial_bodies'
+    )
+    assert body_state is not None
+    assert body_state['next_page'] == 2
+    assert body_state['last_completed_page'] == 1
+    assert body_state['status'] == 'complete'
+    store.close()
+
+
+def test_nightly_update_marks_a_completed_bounded_body_scan_complete(tmp_path: Path):
+    store = EmailMemoryStore(tmp_path / 'email_memory')
+    store.initialize(start_date='2022-01-02')
+
+    run_nightly_update(
+        store=store,
+        client=PagedHimalayaClient(),
+        account_name='primary-account',
+        email_address='user@example.test',
+        include_folders=['projects'],
+        page_size=1,
+        pages_per_folder=1,
+    )
+
+    body_state = store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='projects', sync_kind='nightly_bodies'
+    )
+    assert body_state is not None
+    assert body_state['status'] == 'complete'
+    store.close()
+
+
 def test_ingestion_state_repair_reprocesses_legacy_heuristic_thread_rows(tmp_path: Path):
     store = EmailMemoryStore(tmp_path / 'email_memory')
     store.initialize(start_date='2026-04-01')
@@ -1024,6 +1070,32 @@ def test_initial_ingestion_treats_page_out_of_range_error_as_end_of_folder(tmp_p
     assert state['status'] == 'complete'
     assert state['last_completed_page'] == 1
 
+    store.close()
+
+
+def test_initial_ingestion_preserves_a_resumable_cursor_after_transient_page_failure(tmp_path: Path):
+    store = EmailMemoryStore(tmp_path / 'email_memory')
+    store.initialize(start_date='2022-01-02')
+    client = PageFailureClient(_TRANSIENT_STDERR, page_size=1)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run_initial_ingestion(
+            store=store,
+            client=client,
+            account_name='primary-account',
+            email_address='user@example.test',
+            include_folders=['alpha'],
+            max_pages_per_folder=2,
+            page_size=1,
+        )
+
+    state = store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='alpha', sync_kind='initial_envelopes'
+    )
+    assert state is not None
+    assert state['next_page'] == 2
+    assert state['last_completed_page'] == 1
+    assert state['status'] == 'in_progress'
     store.close()
 
 

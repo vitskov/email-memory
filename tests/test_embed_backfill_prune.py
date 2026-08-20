@@ -35,6 +35,7 @@ from email_memory_store.retrieval.embed_backfill import (
     backfill_message_chunks,
 )
 from email_memory_store.retrieval.incremental import embed_for_pipeline_event
+from email_memory_store.retrieval.vector_store import COLLECTION_NAMES
 from email_memory_store.store import EmailMemoryStore
 
 
@@ -255,20 +256,24 @@ def test_backfill_all_forwards_the_explicit_fact_store_path(monkeypatch, tmp_pat
     for name in (
         "backfill_action_items",
         "backfill_deadlines",
+        "backfill_calendar_events",
         "backfill_decisions",
         "backfill_thread_summaries",
         "backfill_message_chunks",
     ):
         monkeypatch.setattr(embed_backfill, name, lambda **_kwargs: 0)
 
-    assert backfill_all(store=object(), fact_store_db_path=fact_store_db) == {
+    result = backfill_all(store=object(), fact_store_db_path=fact_store_db)
+    assert result == {
         "holographic_facts": 0,
         "action_items": 0,
         "deadlines": 0,
+        "calendar_events": 0,
         "decisions": 0,
         "thread_summaries": 0,
         "message_chunks": 0,
     }
+    assert set(result) == set(COLLECTION_NAMES)
     assert captured["hologr_db_path"] == fact_store_db
     assert captured["vector_store"] is vector_store
     assert captured["embedder"] is embedder

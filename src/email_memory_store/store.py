@@ -20,7 +20,6 @@ from .schema import SCHEMA_SQL
 
 _CURSOR_CONTINUATION_COMMANDS = {
     'initial_envelopes': 'initial-ingest',
-    'initial_bodies': 'initial-ingest',
     'rfc_metadata_backfill': 'backfill-rfc-metadata',
     'repair_bodies': 'repair-ingestion-state',
 }
@@ -1425,6 +1424,78 @@ class EmailMemoryStore:
             """,
             [account_name, folder_name, sync_kind, next_page, last_completed_page, status],
         )
+
+    def reconcile_ingest_sync_cursors(self, *, apply: bool = False) -> dict[str, object]:
+        """Normalize legacy cursor residue without advancing any mail scan.
+
+        Only body cursors whose driving envelope cursor is already complete and
+        whose folder has no pending body failure are eligible.  All resumable
+        envelope scans and every unresolved partial state remain untouched.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT
+                body.account_name,
+                body.folder_name,
+                body.sync_kind,
+                body.next_page,
+                body.last_completed_page,
+                body.status,
+                envelope.status
+            FROM ingest_sync_state body
+            JOIN ingest_sync_state envelope
+              ON envelope.account_name = body.account_name
+             AND envelope.folder_name = body.folder_name
+             AND envelope.sync_kind = CASE body.sync_kind
+                 WHEN 'initial_bodies' THEN 'initial_envelopes'
+                 WHEN 'nightly_bodies' THEN 'nightly_envelopes'
+             END
+            WHERE body.sync_kind IN ('initial_bodies', 'nightly_bodies')
+              AND body.status IN ('in_progress', 'partial')
+              AND envelope.status = 'complete'
+            ORDER BY body.account_name, body.folder_name, body.sync_kind
+            """
+        ).fetchall()
+        normalized: list[dict[str, object]] = []
+        for account_name, folder_name, sync_kind, next_page, last_completed_page, status, _ in rows:
+            if self.list_failed_message_ingestions(
+                account_name=str(account_name), folders=[str(folder_name)], limit=1
+            ):
+                continue
+            if sync_kind == 'initial_bodies' and int(next_page) != int(last_completed_page) + 1:
+                continue
+            if sync_kind == 'nightly_bodies' and int(next_page) != 1:
+                continue
+            normalized.append(
+                {
+                    'account_name': str(account_name),
+                    'folder_name': str(folder_name),
+                    'sync_kind': str(sync_kind),
+                    'previous_status': str(status),
+                }
+            )
+        if apply:
+            for cursor in normalized:
+                row = self.get_ingest_sync_state(
+                    account_name=str(cursor['account_name']),
+                    folder_name=str(cursor['folder_name']),
+                    sync_kind=str(cursor['sync_kind']),
+                )
+                if row is None:
+                    continue
+                self.upsert_ingest_sync_state(
+                    account_name=str(cursor['account_name']),
+                    folder_name=str(cursor['folder_name']),
+                    sync_kind=str(cursor['sync_kind']),
+                    next_page=int(row['next_page']),
+                    last_completed_page=(
+                        int(row['last_completed_page'])
+                        if row['last_completed_page'] is not None
+                        else None
+                    ),
+                    status='complete',
+                )
+        return {'candidates': normalized, 'updated': len(normalized) if apply else 0}
 
     def _thread_lineage_rows(self, *, where_sql: str, params: list[Any], limit: int | None = None) -> list[dict[str, Any]]:
         query = f"""
