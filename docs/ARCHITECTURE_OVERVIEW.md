@@ -127,6 +127,12 @@ report their work, and destructive cleanup requires an apply flag. The core keep
 durable state and local deployment control separate so that updating the package
 does not expose or migrate private data by itself.
 
+Mail-provider commands are bounded. A timed-out provider process is reaped and
+reported through the same retryable failure path as another transient provider
+error; it cannot hold a maintenance lock indefinitely. Initial and repair scans
+preserve their resumable cursor on such a failure, while the bounded nightly
+scan records the affected folder as partial and continues with the others.
+
 `embed-backfill` is the authoritative full reconciliation pass. It compares each
 supported retrieval collection with its persisted source rows, adds missing
 vectors, and removes safe orphans. Incremental commands can embed newly created

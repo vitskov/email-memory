@@ -119,11 +119,15 @@ class HimalayaClient:
         retries: int = 4,
         retry_delay: float = 2.0,
         max_retry_delay: float = 30.0,
+        command_timeout_seconds: float = 60.0,
     ):
         self.binary = binary
         self.retries = max(1, retries)
         self.retry_delay = max(0.0, retry_delay)
         self.max_retry_delay = max(self.retry_delay, max_retry_delay)
+        if command_timeout_seconds <= 0:
+            raise ValueError('command_timeout_seconds must be positive')
+        self.command_timeout_seconds = command_timeout_seconds
 
     def _sleep_for_attempt(self, attempt: int) -> None:
         """Exponential backoff, capped.
@@ -144,8 +148,27 @@ class HimalayaClient:
                     text=False,
                     capture_output=True,
                     check=True,
+                    timeout=self.command_timeout_seconds,
                 )
                 return _decode_command_output(result.stdout)
+            except subprocess.TimeoutExpired as exc:
+                # ``subprocess.run`` terminates and reaps its child before
+                # raising.  Converting the timeout to the existing provider
+                # failure shape lets callers preserve their retry/cursor
+                # policy instead of allowing a single mail command to block
+                # the entire maintenance run indefinitely.
+                last_error = subprocess.CalledProcessError(
+                    124,
+                    [self.binary] + args,
+                    output=exc.output,
+                    stderr=(
+                        f'himalaya command timed out after '
+                        f'{self.command_timeout_seconds:g} seconds'
+                    ),
+                )
+                if attempt >= self.retries:
+                    raise last_error
+                self._sleep_for_attempt(attempt)
             except subprocess.CalledProcessError as exc:
                 last_error = exc
                 if is_permanent_himalaya_error(exc) or attempt >= self.retries:
