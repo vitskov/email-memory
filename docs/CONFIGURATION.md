@@ -145,7 +145,10 @@ are rejected.
     "sender_archive_rules": [
       {
         "folder": "People/Example",
-        "emails": ["contact@example.test"]
+        "emails": ["contact@example.test"],
+        "domains": ["example.test"],
+        "address_contains": ["notifications@"],
+        "name_contains": ["Example Service"]
       }
     ],
     "classification_definitions": {
@@ -158,9 +161,12 @@ are rejected.
 The `retention` object may be omitted. Every field inside it is optional, but
 when present `inbox_folder`, `department_folder`, `service_folder`, and
 `archive_folder` must be nonempty strings. `sender_archive_rules` must be an
-array whose entries contain exactly `folder` (a nonempty string) and `emails`
-(an array of nonempty strings). `classification_definitions` must be a
-string-to-string mapping. These names and values remain private deployment
+array whose entries contain `folder` (a nonempty string) and may contain only
+the matcher arrays `emails`, `domains`, `address_contains`, and
+`name_contains`. Each supplied matcher must be an array of nonempty strings,
+and every rule must have at least one nonempty matcher array. The legacy
+`folder` plus `emails` form remains valid. `classification_definitions` must be
+a string-to-string mapping. These names and values remain private deployment
 policy and must never be placed in public tests, documentation examples with
 real identities, or a public release archive.
 
