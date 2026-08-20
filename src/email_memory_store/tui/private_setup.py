@@ -368,12 +368,32 @@ def _validate_retention(value: object, *, artifact: str) -> None:
         if not isinstance(rules, list):
             raise ValueError(f"{artifact}.sender_archive_rules must be a list")
         for rule in rules:
-            if not isinstance(rule, dict) or set(rule) != {"folder", "emails"}:
+            if not isinstance(rule, dict):
                 raise ValueError(
-                    f"{artifact}.sender_archive_rules entries must contain only folder and emails"
+                    f"{artifact}.sender_archive_rules entries must be objects"
+                )
+            matcher_keys = {"emails", "domains", "address_contains", "name_contains"}
+            unknown_rule_keys = set(rule) - {"folder"} - matcher_keys
+            if unknown_rule_keys:
+                raise ValueError(
+                    f"{artifact}.sender_archive_rules entries contain unsupported key(s): "
+                    f"{', '.join(sorted(unknown_rule_keys))}"
+                )
+            if "folder" not in rule:
+                raise ValueError(
+                    f"{artifact}.sender_archive_rules entries must contain folder"
                 )
             _validate_string(rule["folder"], artifact=artifact, key="sender_archive_rules.folder")
-            _validate_string_list(rule["emails"], artifact=artifact, key="sender_archive_rules.emails")
+            configured_matchers = matcher_keys & set(rule)
+            for key in configured_matchers:
+                _validate_string_list(
+                    rule[key], artifact=artifact, key=f"sender_archive_rules.{key}"
+                )
+            if not any(rule[key] for key in configured_matchers):
+                raise ValueError(
+                    f"{artifact}.sender_archive_rules entries require at least one "
+                    "non-empty matcher array"
+                )
 
     if "classification_definitions" in value:
         definitions = value["classification_definitions"]

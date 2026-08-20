@@ -134,6 +134,26 @@ def test_write_private_setup_supports_validated_local_retention_policy(tmp_path)
     assert load_private_setup(config_home=tmp_path).policy["retention"] == retention
 
 
+def test_write_private_setup_supports_all_sender_archive_matchers(tmp_path):
+    rules = [
+        {
+            "folder": "Archive/Matched",
+            "emails": ["contact@example.test"],
+            "domains": ["example.test"],
+            "address_contains": ["alerts@"],
+            "name_contains": ["Example Service"],
+        }
+    ]
+    paths = write_private_setup(
+        _values(retention_sender_archive_rules=json.dumps(rules)),
+        config_home=tmp_path,
+    )
+
+    policy = json.loads(paths.policy.read_text(encoding="utf-8"))
+    assert policy["retention"]["sender_archive_rules"] == rules
+    assert load_private_setup(config_home=tmp_path).policy["retention"] == policy["retention"]
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -143,7 +163,19 @@ def test_write_private_setup_supports_validated_local_retention_policy(tmp_path)
         (_values(retention_sender_archive_rules="not JSON"), "valid JSON"),
         (
             _values(retention_sender_archive_rules='[{"folder":"Archive","unexpected":true}]'),
-            "only folder and emails",
+            "unsupported key",
+        ),
+        (
+            _values(retention_sender_archive_rules='[{"folder":"Archive","domains":"example.test"}]'),
+            "must be a list of non-empty strings",
+        ),
+        (
+            _values(retention_sender_archive_rules='[{"folder":"Archive","emails":[],"domains":[]}]'),
+            "at least one non-empty matcher array",
+        ),
+        (
+            _values(retention_sender_archive_rules='[{"emails":["contact@example.test"]}]'),
+            "must contain folder",
         ),
         (
             _values(retention_classification_definitions='{"kind": 1}'),
