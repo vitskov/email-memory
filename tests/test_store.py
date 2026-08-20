@@ -100,6 +100,61 @@ def test_status_payload_exposes_persisted_metaparameters(tmp_path: Path):
     store.close()
 
 
+def test_reconcile_ingest_sync_cursors_only_closes_proven_legacy_residue(tmp_path: Path):
+    store = EmailMemoryStore(tmp_path / 'email_memory')
+    store.initialize()
+    for sync_kind, next_page, last_completed_page, status in (
+        ('initial_envelopes', 3, 2, 'complete'),
+        ('initial_bodies', 3, 2, 'partial'),
+        ('nightly_envelopes', 1, 2, 'complete'),
+        ('nightly_bodies', 1, 2, 'in_progress'),
+    ):
+        store.upsert_ingest_sync_state(
+            account_name='primary-account',
+            folder_name='INBOX',
+            sync_kind=sync_kind,
+            next_page=next_page,
+            last_completed_page=last_completed_page,
+            status=status,
+        )
+    store.upsert_ingest_sync_state(
+        account_name='primary-account',
+        folder_name='Archive',
+        sync_kind='initial_envelopes',
+        next_page=4,
+        last_completed_page=3,
+        status='in_progress',
+    )
+    store.upsert_ingest_sync_state(
+        account_name='primary-account',
+        folder_name='Archive',
+        sync_kind='initial_bodies',
+        next_page=4,
+        last_completed_page=3,
+        status='in_progress',
+    )
+
+    preview = store.reconcile_ingest_sync_cursors()
+    assert preview['updated'] == 0
+    assert {cursor['sync_kind'] for cursor in preview['candidates']} == {
+        'initial_bodies',
+        'nightly_bodies',
+    }
+
+    applied = store.reconcile_ingest_sync_cursors(apply=True)
+    assert applied['updated'] == 2
+    assert store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='INBOX', sync_kind='initial_bodies'
+    )['status'] == 'complete'
+    assert store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='INBOX', sync_kind='nightly_bodies'
+    )['status'] == 'complete'
+    assert store.get_ingest_sync_state(
+        account_name='primary-account', folder_name='Archive', sync_kind='initial_bodies'
+    )['status'] == 'in_progress'
+    store.close()
+
+
 def test_pipeline_status_reports_identity_processing_and_last_ingestion_failures(tmp_path: Path):
     store = EmailMemoryStore(tmp_path / 'email_memory')
     store.initialize()
@@ -210,7 +265,7 @@ def test_pipeline_status_reports_identity_processing_and_last_ingestion_failures
             'account_name': 'primary-account',
             'email_address': 'user@example.test',
             'folders': ['Archive', 'Sent Items'],
-            'sync_kinds': ['initial_bodies', 'initial_envelopes'],
+            'sync_kinds': ['initial_envelopes'],
             'shell_command': "email-memory-store initial-ingest --account primary-account --email user@example.test --include-folder Archive --include-folder 'Sent Items'",
         }
     ]

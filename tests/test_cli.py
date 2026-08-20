@@ -30,6 +30,7 @@ def test_cli_supports_ingest_bodies_command():
         '--folder', 'INBOX',
         '--max-pages-per-folder', '5',
     ])
+    reconcile_args = parser.parse_args(['reconcile-ingestion-cursors', '--apply'])
     lineage_args = parser.parse_args([
         'thread-lineage',
         '--thread-key', 'rfc822-thread:root@example.test',
@@ -56,6 +57,8 @@ def test_cli_supports_ingest_bodies_command():
     assert repair_args.email == 'user@example.test'
     assert repair_args.include_folders == ['INBOX']
     assert repair_args.max_pages_per_folder == 5
+    assert reconcile_args.command == 'reconcile-ingestion-cursors'
+    assert reconcile_args.apply is True
     assert lineage_args.command == 'thread-lineage'
     assert lineage_args.thread_keys == ['rfc822-thread:root@example.test', 'rfc822-thread:other@example.test']
     assert cross_folder_args.command == 'cross-folder-threads'

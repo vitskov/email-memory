@@ -99,7 +99,8 @@ These paths are runtime data and must be excluded from a public source archive.
 6. Promotion creates auditable candidates for a separately configured downstream
    fact store.
 7. Maintenance commands repair indexes, retry failed body processing, reconcile
-   vectors, and remove eligible expired time-bound records.
+   every supported vector collection, normalize only provably completed legacy
+   body cursors, and remove eligible expired time-bound records.
 
 ## Core Services
 
@@ -125,6 +126,18 @@ Commands that change stored data are explicit. Maintenance and recovery commands
 report their work, and destructive cleanup requires an apply flag. The core keeps
 durable state and local deployment control separate so that updating the package
 does not expose or migrate private data by itself.
+
+`embed-backfill` is the authoritative full reconciliation pass. It compares each
+supported retrieval collection with its persisted source rows, adds missing
+vectors, and removes safe orphans. Incremental commands can embed newly created
+records sooner, but do not replace the full reconciliation pass.
+
+Initial envelope cursors drive resumable scans. Body cursors record body
+processing health and are never independent continuation instructions. A normal
+bounded nightly scan is complete even when its final page is full; only actual
+body failures remain partial. `reconcile-ingestion-cursors --apply` is an
+explicit maintenance operation for closing legacy body cursor residue when the
+matching envelope scan is already complete and its retry queue is empty.
 
 ## Public Release Invariants
 

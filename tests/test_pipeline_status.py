@@ -210,8 +210,8 @@ def test_cmd_pipeline_status_reports_retrieval_and_promotion_health(tmp_path: Pa
             'command': 'initial-ingest',
             'account_name': 'primary-account',
             'email_address': 'user@example.test',
-            'folders': ['Archive', 'Sent Items'],
-            'sync_kinds': ['initial_bodies', 'initial_envelopes'],
-            'shell_command': "email-memory-store initial-ingest --account primary-account --email user@example.test --include-folder Archive --include-folder 'Sent Items'",
+            'folders': ['Archive'],
+            'sync_kinds': ['initial_envelopes'],
+            'shell_command': 'email-memory-store initial-ingest --account primary-account --email user@example.test --include-folder Archive',
         }
     ]
