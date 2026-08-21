@@ -117,6 +117,15 @@ def _install_fakes(
             output = b"0123456789ab\n"
         elif "runtime-doctor" in parts:
             output = b'{"ok":true,"paths_redacted":true}\n'
+        elif "embed-status" in parts:
+            output = json.dumps(
+                {
+                    "collections": {
+                        name: 1 for name in deployment_cli.INDEX_COLLECTIONS
+                    },
+                    "persist_path": "/redacted-by-coordinator",
+                }
+            ).encode()
         elif len(parts) > 1 and parts[1:3] == ["account", "list"]:
             output = b'[{"name":"synthetic-account","default":true}]\n'
         elif len(parts) > 1 and parts[1:3] == ["folder", "list"]:
@@ -226,15 +235,15 @@ def test_transaction_persists_one_stable_cron_entry_and_disabled_fact_status(
         status == "pass" for code, status in checks.items() if code != "fact_provider"
     )
     payload = json.loads(receipt.read_text())
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert len(payload["release_identity"]) == 64
+    payload["schema_version"] = 2
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(
         deployment_cli, "_read_crontab", lambda command, env: installed[-1]
     )
-    assert deployment_cli._doctor(args) == 0
-    runtime_config = str(
-        Path(args.config_home) / "email-memory-store/runtime.toml"
-    )
+    assert deployment_cli._doctor(args) == deployment_cli.DOCTOR_READY_EXIT
+    runtime_config = str(Path(args.config_home) / "email-memory-store/runtime.toml")
     private_values = (
         "synthetic-account",
         "owner@example.test",
@@ -285,6 +294,246 @@ def test_transaction_persists_one_stable_cron_entry_and_disabled_fact_status(
     assert helper_result.stdout == str(
         Path(args.data_home) / "email-memory-store/current"
     )
+
+
+def test_fresh_install_activates_awaiting_index_without_weakening_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args, release, scripts = _fixture_args(tmp_path)
+    captured_commands: list[list[str]] = []
+    captured_environments: list[dict[str, str]] = []
+    installed = _install_fakes(
+        monkeypatch,
+        args,
+        scripts,
+        captured_commands,
+        captured_environments,
+    )
+    fake_run = deployment_cli._run
+    indexed_documents = 0
+    mcp_probes = 0
+
+    def empty_index(
+        command: Any,
+        *,
+        env: dict[str, str],
+        input_bytes: bytes | None = None,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal mcp_probes
+        parts = [str(item) for item in command]
+        if "embed-status" in parts:
+            output = json.dumps(
+                {
+                    "collections": {
+                        name: indexed_documents
+                        for name in deployment_cli.INDEX_COLLECTIONS
+                    },
+                    "persist_path": "/private/runtime/path",
+                }
+            ).encode()
+            return subprocess.CompletedProcess(parts, 0, output, b"")
+        if parts == [str(release / "venv/bin/email-memory-store-mcp")]:
+            mcp_probes += 1
+            if not indexed_documents:
+                raise AssertionError("an empty index must not be treated as MCP-ready")
+        return fake_run(command, env=env, input_bytes=input_bytes, timeout=timeout)
+
+    monkeypatch.setattr(deployment_cli, "_run", empty_index)
+
+    assert deployment_cli._bootstrap(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output == {
+        "schema_version": 1,
+        "status": "awaiting-index",
+        "paths_redacted": True,
+    }
+    receipt = json.loads((release / ".deployment-readiness.json").read_text())
+    checks = {item["code"]: item["status"] for item in receipt["checks"]}
+    assert receipt["status"] == "awaiting-index"
+    assert checks["mcp_eof"] == "deferred"
+    maintenance_index = next(
+        index
+        for index, command in enumerate(captured_commands)
+        if command[:3] == ["/bin/bash", "-p", str(scripts / "nightly_maintenance.sh")]
+    )
+    assert (
+        captured_environments[maintenance_index]["EMAIL_MEMORY_PREFLIGHT_ONLY"] == "1"
+    )
+    assert (Path(args.data_home) / "email-memory-store/current").resolve() == release
+    monkeypatch.setattr(
+        deployment_cli, "_read_crontab", lambda command, env: installed[-1]
+    )
+
+    assert deployment_cli._doctor(args) == deployment_cli.DOCTOR_AWAITING_INDEX_EXIT
+    awaiting_output = json.loads(capsys.readouterr().out)
+    assert awaiting_output["status"] == "awaiting-index"
+    assert mcp_probes == 0
+
+    indexed_documents = 1
+    assert deployment_cli._doctor(args) == deployment_cli.DOCTOR_READY_EXIT
+    ready_output = json.loads(capsys.readouterr().out)
+    assert ready_output["status"] == "ready"
+    assert mcp_probes == 1
+
+
+@pytest.mark.parametrize(
+    "footprint",
+    ["managed-cron", "mcp-current", "mcp-stable", "receipt", "other-release"],
+)
+def test_removed_current_with_prior_footprint_cannot_defer_empty_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    footprint: str,
+) -> None:
+    args, release, scripts = _fixture_args(tmp_path)
+    _install_fakes(monkeypatch, args, scripts)
+    fake_run = deployment_cli._run
+    current = Path(args.data_home) / "email-memory-store/current"
+    current.parent.mkdir(mode=0o700)
+    current.symlink_to(release)
+    current.unlink()
+
+    if footprint == "managed-cron":
+        managed = (
+            f"{deployment_cli.MANAGED_START}\n"
+            "30 2 * * * /stale/deploy nightly\n"
+            f"{deployment_cli.MANAGED_END}\n"
+        ).encode()
+        monkeypatch.setattr(
+            deployment_cli, "_read_crontab", lambda command, env: managed
+        )
+    elif footprint in {"mcp-current", "mcp-stable"}:
+        link = (
+            Path(args.data_home) / "email-memory-store/mcp-launcher/current"
+            if footprint == "mcp-current"
+            else Path(args.home) / ".local/bin/email_memory_store_mcp_hermes.sh"
+        )
+        link.parent.mkdir(parents=True, mode=0o700)
+        link.symlink_to("stale-target")
+    elif footprint == "receipt":
+        receipt = release / ".deployment-readiness.json"
+        receipt.write_text("{}\n", encoding="utf-8")
+        receipt.chmod(0o600)
+    else:
+        (release.parent / "prior-release").mkdir(mode=0o700)
+
+    def empty_index(
+        command: Any,
+        *,
+        env: dict[str, str],
+        input_bytes: bytes | None = None,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        parts = [str(item) for item in command]
+        if "embed-status" in parts:
+            output = json.dumps(
+                {
+                    "collections": {
+                        name: 0 for name in deployment_cli.INDEX_COLLECTIONS
+                    },
+                    "persist_path": "/private/runtime/path",
+                }
+            ).encode()
+            return subprocess.CompletedProcess(parts, 0, output, b"")
+        if parts == [str(release / "venv/bin/email-memory-store-mcp")]:
+            raise AssertionError("a prior deployment footprint cannot defer MCP")
+        return fake_run(command, env=env, input_bytes=input_bytes, timeout=timeout)
+
+    monkeypatch.setattr(deployment_cli, "_run", empty_index)
+
+    with pytest.raises(deployment_cli.BootstrapError, match="MCP readiness"):
+        deployment_cli._bootstrap(args)
+
+    assert not current.exists()
+    assert not current.is_symlink()
+
+
+def test_upgrade_with_existing_index_requires_mcp_probe_and_records_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, first_release, scripts = _fixture_args(tmp_path)
+    _install_fakes(monkeypatch, args, scripts)
+    assert deployment_cli._bootstrap(args) == 0
+
+    replacement = first_release.parent / "replacement-py314-cpu"
+    shutil.copytree(first_release, replacement)
+    args.release_id = replacement.name
+    captured_commands: list[list[str]] = []
+    captured_environments: list[dict[str, str]] = []
+    _install_fakes(
+        monkeypatch,
+        args,
+        scripts,
+        captured_commands,
+        captured_environments,
+    )
+
+    assert deployment_cli._bootstrap(args) == 0
+
+    embed_index = next(
+        index
+        for index, command in enumerate(captured_commands)
+        if "embed-status" in command
+    )
+    mcp_index = next(
+        index
+        for index, command in enumerate(captured_commands)
+        if command == [str(replacement / "venv/bin/email-memory-store-mcp")]
+    )
+    assert embed_index < mcp_index
+    receipt = json.loads((replacement / ".deployment-readiness.json").read_text())
+    checks = {item["code"]: item["status"] for item in receipt["checks"]}
+    assert receipt["status"] == "ready"
+    assert checks["mcp_eof"] == "pass"
+
+
+def test_upgrade_with_empty_index_preserves_ready_active_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args, first_release, scripts = _fixture_args(tmp_path)
+    _install_fakes(monkeypatch, args, scripts)
+    assert deployment_cli._bootstrap(args) == 0
+
+    replacement = first_release.parent / "replacement-py314-cpu"
+    shutil.copytree(first_release, replacement)
+    (replacement / ".deployment-readiness.json").unlink()
+    args.release_id = replacement.name
+    _install_fakes(monkeypatch, args, scripts)
+    fake_run = deployment_cli._run
+
+    def empty_index(
+        command: Any,
+        *,
+        env: dict[str, str],
+        input_bytes: bytes | None = None,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        parts = [str(item) for item in command]
+        if "embed-status" in parts:
+            output = json.dumps(
+                {
+                    "collections": {
+                        name: 0 for name in deployment_cli.INDEX_COLLECTIONS
+                    },
+                    "persist_path": "/private/runtime/path",
+                }
+            ).encode()
+            return subprocess.CompletedProcess(parts, 0, output, b"")
+        if parts == [str(replacement / "venv/bin/email-memory-store-mcp")]:
+            raise AssertionError("an empty upgrade must not be treated as MCP-ready")
+        return fake_run(command, env=env, input_bytes=input_bytes, timeout=timeout)
+
+    monkeypatch.setattr(deployment_cli, "_run", empty_index)
+
+    with pytest.raises(deployment_cli.BootstrapError, match="MCP readiness"):
+        deployment_cli._bootstrap(args)
+
+    current = Path(args.data_home) / "email-memory-store/current"
+    assert current.resolve() == first_release
+    assert not (replacement / ".deployment-readiness.json").exists()
 
 
 def test_coordinator_runs_non_executable_provisioner_through_bash(

@@ -33,6 +33,15 @@ RECEIPT_CODES = (
     "mcp_launcher",
     "scheduler",
 )
+INDEX_COLLECTIONS = (
+    "holographic_facts",
+    "action_items",
+    "deadlines",
+    "calendar_events",
+    "decisions",
+    "thread_summaries",
+    "message_chunks",
+)
 PUBLIC_FACT_STORE_PROVIDER = (
     "email_memory_store.integrations.hermes_fact_store:MemoryStore"
 )
@@ -42,6 +51,9 @@ _SAFE_CRON_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 _SHELL_INJECTION_VARIABLES = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"}
 _CONNECTOR_CONTROL_PREFIXES = ("HIMALAYA_", "HERMES_")
 DEFAULT_PROBE_TIMEOUT_SECONDS = 60
+DOCTOR_READY_EXIT = 0
+DOCTOR_NOT_READY_EXIT = 1
+DOCTOR_AWAITING_INDEX_EXIT = 2
 
 
 class BootstrapError(RuntimeError):
@@ -52,7 +64,9 @@ def _positive_timeout(value: str) -> int:
     try:
         timeout = int(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError("probe timeout must be a positive integer") from error
+        raise argparse.ArgumentTypeError(
+            "probe timeout must be a positive integer"
+        ) from error
     if timeout <= 0:
         raise argparse.ArgumentTypeError("probe timeout must be a positive integer")
     return timeout
@@ -233,6 +247,34 @@ def _managed_crontab(original: bytes, cron_line: str, replaced_command: str) -> 
     return base + separator + block
 
 
+def _is_first_deployment(
+    *,
+    current: Path,
+    mcp_current: Path,
+    mcp_stable: Path,
+    old_cron: bytes,
+    candidate: Path,
+) -> bool:
+    """Return true only when no durable deployment footprint predates staging."""
+    if current.is_symlink() or mcp_current.is_symlink() or mcp_stable.is_symlink():
+        return False
+    if _without_managed_cron(old_cron) != old_cron:
+        return False
+    try:
+        releases = list(candidate.parent.iterdir())
+    except FileNotFoundError:
+        releases = []
+    except OSError as error:
+        raise BootstrapError("deployment history could not be verified") from error
+    for release in releases:
+        receipt = release / ".deployment-readiness.json"
+        # The requested unreceipted candidate is transaction staging. Any sibling
+        # release or candidate receipt proves that deployment previously progressed.
+        if release != candidate or receipt.exists() or receipt.is_symlink():
+            return False
+    return True
+
+
 def _install_crontab(command: str, content: bytes, env: dict[str, str]) -> None:
     completed = subprocess.run(
         [command, "-"], env=env, input=content, capture_output=True
@@ -338,6 +380,33 @@ def _verify_mail(output: bytes) -> None:
         raise BootstrapError("mail connector returned invalid output") from error
     if not isinstance(payload, list | dict):
         raise BootstrapError("mail connector returned invalid output")
+
+
+def _indexed_document_count(output: bytes) -> int:
+    """Validate redacted embed status and return only its aggregate count."""
+    try:
+        payload = json.loads(output)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BootstrapError(
+            "retrieval index status returned invalid output"
+        ) from error
+    if not isinstance(payload, dict) or set(payload) != {"collections", "persist_path"}:
+        raise BootstrapError("retrieval index status returned invalid output")
+    collections = payload["collections"]
+    if (
+        not isinstance(collections, dict)
+        or set(collections) != set(INDEX_COLLECTIONS)
+        or not isinstance(payload["persist_path"], str)
+        or not payload["persist_path"]
+    ):
+        raise BootstrapError("retrieval index status returned invalid output")
+    counts = list(collections.values())
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in counts
+    ):
+        raise BootstrapError("retrieval index status returned invalid output")
+    return sum(counts)
 
 
 def _verify_default_mail_account(output: bytes, selected_account: str) -> None:
@@ -602,10 +671,14 @@ def _write_receipt(
     release: Path,
     checks: dict[str, str],
     release_identity: str,
+    *,
+    status: str = "ready",
 ) -> None:
+    if status not in {"ready", "awaiting-index"}:
+        raise BootstrapError("deployment receipt status is invalid")
     payload = {
-        "schema_version": 2,
-        "status": "ready",
+        "schema_version": 3,
+        "status": status,
         "paths_redacted": True,
         "release_identity": release_identity,
         "checks": [{"code": code, "status": checks[code]} for code in RECEIPT_CODES],
@@ -643,12 +716,12 @@ def _write_receipt(
         temporary.unlink(missing_ok=True)
 
 
-def _receipt_is_ready(payload: object) -> bool:
+def _receipt_status(payload: object) -> str | None:
     if not isinstance(payload, dict):
-        return False
+        return None
     checks = payload.get("checks")
     if not isinstance(checks, list) or len(checks) != len(RECEIPT_CODES):
-        return False
+        return None
     statuses: dict[str, str] = {}
     for item in checks:
         if (
@@ -658,22 +731,33 @@ def _receipt_is_ready(payload: object) -> bool:
             or not isinstance(item["status"], str)
             or item["code"] in statuses
         ):
-            return False
+            return None
         statuses[item["code"]] = item["status"]
-    return bool(
-        payload.get("schema_version") == 2
-        and payload.get("status") == "ready"
-        and payload.get("paths_redacted") is True
-        and isinstance(payload.get("release_identity"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", payload["release_identity"]) is not None
-        and set(statuses) == set(RECEIPT_CODES)
-        and statuses["fact_provider"] in {"disabled", "ready"}
-        and all(
-            statuses[code] == "pass"
-            for code in RECEIPT_CODES
-            if code != "fact_provider"
-        )
-    )
+    schema_version = payload.get("schema_version")
+    receipt_status = payload.get("status")
+    if (
+        schema_version not in {2, 3}
+        or receipt_status not in {"ready", "awaiting-index"}
+        or (schema_version == 2 and receipt_status != "ready")
+        or payload.get("paths_redacted") is not True
+        or not isinstance(payload.get("release_identity"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", payload["release_identity"]) is None
+        or set(statuses) != set(RECEIPT_CODES)
+        or statuses["fact_provider"] not in {"disabled", "ready"}
+    ):
+        return None
+    expected_mcp = "pass" if receipt_status == "ready" else "deferred"
+    if statuses["mcp_eof"] != expected_mcp or any(
+        statuses[code] != "pass"
+        for code in RECEIPT_CODES
+        if code not in {"fact_provider", "mcp_eof"}
+    ):
+        return None
+    return receipt_status
+
+
+def _receipt_is_ready(payload: object) -> bool:
+    return _receipt_status(payload) == "ready"
 
 
 def _mcp_links_are_ready(current: Path, stable: Path) -> bool:
@@ -848,6 +932,7 @@ def _bootstrap(args: argparse.Namespace) -> int:
     old_current = os.readlink(current) if current.is_symlink() else None
     if current.exists() and not current.is_symlink():
         raise BootstrapError("active release selector is invalid")
+    deployment_status = "ready"
     old_cron = _read_crontab(crontab_command, env)
     activated = False
     cron_attempted = False
@@ -859,6 +944,13 @@ def _bootstrap(args: argparse.Namespace) -> int:
             raise BootstrapError("MCP launcher destination is not a symlink")
     old_mcp_current = os.readlink(mcp_current) if mcp_current.is_symlink() else None
     old_mcp_stable = os.readlink(mcp_stable) if mcp_stable.is_symlink() else None
+    initial_install = _is_first_deployment(
+        current=current,
+        mcp_current=mcp_current,
+        mcp_stable=mcp_stable,
+        old_cron=old_cron,
+        candidate=candidate,
+    )
     try:
         signal_context = _transaction_signal_handlers()
         signal_context.__enter__()
@@ -936,14 +1028,7 @@ def _bootstrap(args: argparse.Namespace) -> int:
         )
         checks["mail_connector"] = "pass"
         checks["fact_provider"] = _check_fact_provider(python, config, runtime_env)
-        _run(
-            [mcp],
-            env=runtime_env,
-            input_bytes=b"",
-            timeout=args.probe_timeout,
-        )
-        checks["mcp_eof"] = "pass"
-        preflight_env = runtime_env | {
+        maintenance_env = runtime_env | {
             "EMAIL_MEMORY_PREFLIGHT_ONLY": "1",
             "EMAIL_MEMORY_TEST_MODE": "1",
             "EMAIL_MEMORY_STORE_ENVIRONMENT": str(venv),
@@ -951,8 +1036,23 @@ def _bootstrap(args: argparse.Namespace) -> int:
             "EMAIL_MEMORY_STORE_MCP_COMMAND": str(mcp),
             "EMAIL_MEMORY_OPERATIONAL_PYTHON": str(python),
         }
-        _run(["/bin/bash", "-p", maintenance], env=preflight_env)
+        _run(["/bin/bash", "-p", maintenance], env=maintenance_env)
         checks["maintenance_preflight"] = "pass"
+        index_status = _run([cli, "embed-status"], env=runtime_env)
+        indexed_documents = _indexed_document_count(index_status.stdout)
+        if indexed_documents:
+            _run(
+                [mcp],
+                env=runtime_env,
+                input_bytes=b"",
+                timeout=args.probe_timeout,
+            )
+            checks["mcp_eof"] = "pass"
+        elif initial_install:
+            deployment_status = "awaiting-index"
+            checks["mcp_eof"] = "deferred"
+        else:
+            raise BootstrapError("candidate MCP readiness failed")
         _sync_release_tree(candidate, env)
         mcp_attempted = True
         _run(["/bin/bash", "-p", mcp_installer], env=env)
@@ -973,7 +1073,13 @@ def _bootstrap(args: argparse.Namespace) -> int:
         )
         checks["scheduler"] = "pass"
         checks["release_activated"] = "pass"
-        _write_receipt(receipt, candidate, checks, release_identity)
+        _write_receipt(
+            receipt,
+            candidate,
+            checks,
+            release_identity,
+            status=deployment_status,
+        )
         activated = True
         _atomic_symlink(candidate, current)
         if args.fail_after_activation:
@@ -1003,7 +1109,15 @@ def _bootstrap(args: argparse.Namespace) -> int:
     finally:
         if "signal_context" in locals():
             signal_context.__exit__(*sys.exc_info())
-    print("email-memory deployment is ready")
+    print(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": deployment_status,
+                "paths_redacted": True,
+            }
+        )
+    )
     return 0
 
 
@@ -1033,6 +1147,7 @@ def _doctor(args: argparse.Namespace) -> int:
     }
     env["PYTHONNOUSERSITE"] = "1"
     healthy = current.is_symlink()
+    reported_status = "not-ready"
     try:
         _validate_production_roots(
             home=home,
@@ -1069,8 +1184,9 @@ def _doctor(args: argparse.Namespace) -> int:
         ):
             raise BootstrapError("deployment receipt readiness validation failed")
         receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+        receipt_status = _receipt_status(receipt_payload)
         if (
-            not _receipt_is_ready(receipt_payload)
+            receipt_status is None
             or not isinstance(receipt_payload, dict)
             or receipt_payload.get("release_identity") != _release_identity(active)
             or not _mcp_links_are_ready(mcp_current, mcp_stable)
@@ -1102,6 +1218,22 @@ def _doctor(args: argparse.Namespace) -> int:
             timeout=args.probe_timeout,
         )
         _check_fact_provider(venv / "bin/python", config, runtime_env)
+        index_status = _run(
+            [venv / "bin/email-memory-store", "embed-status"], env=runtime_env
+        )
+        indexed_documents = _indexed_document_count(index_status.stdout)
+        if indexed_documents:
+            _run(
+                [venv / "bin/email-memory-store-mcp"],
+                env=runtime_env,
+                input_bytes=b"",
+                timeout=args.probe_timeout,
+            )
+            live_status = "ready"
+        elif receipt_status == "awaiting-index":
+            live_status = "awaiting-index"
+        else:
+            raise BootstrapError("active MCP readiness failed")
         cron = _read_crontab(_cron_executable(args.crontab_command), env).decode()
         schedule = _validate_schedule(args.cron_schedule)
         nightly = current / "bin/email-memory-store-deploy"
@@ -1115,18 +1247,24 @@ def _doctor(args: argparse.Namespace) -> int:
         expected_block = f"{MANAGED_START}\n{expected}\n{MANAGED_END}\n"
         _without_managed_cron(cron.encode())
         healthy = healthy and cron.count(expected_block) == 1
+        if healthy:
+            reported_status = live_status
     except BootstrapError, KeyError, OSError, UnicodeDecodeError, json.JSONDecodeError:
         healthy = False
     print(
         json.dumps(
             {
                 "schema_version": 1,
-                "status": "ready" if healthy else "not-ready",
+                "status": reported_status,
                 "paths_redacted": True,
             }
         )
     )
-    return 0 if healthy else 1
+    if not healthy:
+        return DOCTOR_NOT_READY_EXIT
+    if reported_status == "awaiting-index":
+        return DOCTOR_AWAITING_INDEX_EXIT
+    return DOCTOR_READY_EXIT
 
 
 def _nightly(_args: argparse.Namespace) -> NoReturn:
