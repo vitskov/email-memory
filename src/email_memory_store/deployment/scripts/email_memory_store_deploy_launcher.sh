@@ -81,7 +81,7 @@ for variable in "${!PIP_@}"; do unset "$variable"; done
 unset VIRTUAL_ENV CONDA_PREFIX CONDA_DEFAULT_ENV
 PYTHONNOUSERSITE=1
 export PYTHONNOUSERSITE
-"${CLEAN_ENV[@]}" "$PYTHON_PATH" -I - "$RELEASE_ROOT" <<'PY' || fail
+"${CLEAN_ENV[@]}" "$PYTHON_REQUEST" -I - "$RELEASE_ROOT" <<'PY' || fail
 from pathlib import Path
 import sys
 import sysconfig
@@ -97,4 +97,4 @@ paths = (
 if any(not path.resolve(strict=True).is_relative_to(release) for path in paths):
     raise SystemExit(1)
 PY
-exec "${CLEAN_ENV[@]}" "$PYTHON_PATH" -I -m email_memory_store.deployment.cli "$@"
+exec "${CLEAN_ENV[@]}" "$PYTHON_REQUEST" -I -m email_memory_store.deployment.cli "$@"

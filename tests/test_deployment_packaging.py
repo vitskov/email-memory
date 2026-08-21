@@ -219,8 +219,9 @@ def test_deploy_ignores_hostile_path_and_python_injection(tmp_path: Path) -> Non
     assert not marker.exists()
 
 
-def test_deployed_launcher_clears_hostile_python_and_uv_environment(
-    tmp_path: Path,
+@pytest.mark.parametrize("command", ["doctor", "nightly"])
+def test_deployed_launcher_dispatches_with_the_validated_venv_python(
+    tmp_path: Path, command: str
 ) -> None:
     release = tmp_path / "release"
     release_bin = release / "bin"
@@ -247,6 +248,7 @@ def test_deployed_launcher_clears_hostile_python_and_uv_environment(
     python = python_bin / "python"
     python.write_text(
         "#!/bin/bash\n"
+        f'[[ "$0" == "{venv_bin / "python"}" ]] || exit 92\n'
         f'[[ -z "${{PYTHONPATH:-}}" && -z "${{PYTHONHOME:-}}" && '
         f'-z "${{UV_CONFIG_FILE:-}}" && -z "${{PYTHONPYCACHEPREFIX:-}}" ]] '
         f"|| {{ /usr/bin/touch '{marker}'; exit 90; }}\n"
@@ -278,8 +280,23 @@ def test_deployed_launcher_clears_hostile_python_and_uv_environment(
     bash_env = hostile / "bash-env"
     bash_env.write_text(f"/usr/bin/touch '{marker}'\n", encoding="utf-8")
 
+    direct_base = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-m",
+            "email_memory_store.deployment.cli",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct_base.returncode == 92
+    assert not invocation.exists()
+
     completed = subprocess.run(
-        [str(launcher), "doctor"],
+        [str(launcher), command],
         env=os.environ
         | {
             "PYTHONPATH": str(hostile),
@@ -299,8 +316,34 @@ def test_deployed_launcher_clears_hostile_python_and_uv_environment(
     assert completed.returncode == 0, completed.stderr
     assert not marker.exists()
     assert invocation.read_text(encoding="utf-8").strip() == (
-        "-I -m email_memory_store.deployment.cli doctor"
+        f"-I -m email_memory_store.deployment.cli {command}"
     )
+
+
+def test_venv_python_entry_preserves_installed_coordinator_package() -> None:
+    venv_python = Path(sys.executable)
+    base_python = venv_python.resolve(strict=True)
+
+    assert venv_python != base_python, "test suite must run from its uv environment"
+    probe = (
+        "from email_memory_store.deployment import cli; "
+        "raise SystemExit(0 if callable(cli.main) else 1)"
+    )
+    lexical = subprocess.run(
+        [str(venv_python), "-I", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    direct_base = subprocess.run(
+        [str(base_python), "-I", "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert lexical.returncode == 0, lexical.stderr
+    assert direct_base.returncode != 0
 
 
 def test_production_environment_helper_ignores_hostile_home_and_xdg(
