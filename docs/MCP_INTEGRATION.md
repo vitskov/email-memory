@@ -1,5 +1,8 @@
 # MCP Integration
 
+[Documentation index](README.md) | [Typical deployment](DEPLOYMENT.md) |
+[Post-install usage](USAGE.md)
+
 `email-memory-store` includes a stdio MCP server for querying an existing local
 email index from an MCP-compatible host. The server exposes retrieval; ingestion,
 indexing, repairs, and other lifecycle operations remain CLI responsibilities.
@@ -9,6 +12,11 @@ indexing, repairs, and other lifecycle operations remain CLI responsibilities.
 Install the package and prepare the runtime through the CLI first. The MCP server
 requires an existing Chroma index containing application data and never creates
 an empty replacement during startup.
+
+A transactional deployment can finish at `awaiting-index` when its new runtime
+has no indexed data. Complete the first maintenance run in
+[Deployment](DEPLOYMENT.md#first-index-and-readiness), then require deployment
+doctor status `ready` before registration.
 
 With a runtime manifest created as described in
 [Configuration](CONFIGURATION.md), verify the attachment:
@@ -24,8 +32,20 @@ registering MCP.
 
 ## Register the stdio server
 
-Configure the host to run the installed executable directly and pass one explicit
-runtime attachment. A host configuration commonly has this shape:
+Transactional deployment installs this stable, package-owned launcher:
+
+```text
+<account-home>/.local/bin/email_memory_store_mcp_hermes.sh
+```
+
+Register that exact launcher with the MCP host and pass no arguments. The
+launcher resolves the active immutable release through `current`, validates the
+owner-only local bundle, and supplies the runtime manifest through the child
+environment so its private path does not appear in process arguments.
+
+For a standalone or contributor bootstrap, configure the host to run the
+checkout-local executable and pass one explicit runtime attachment. A host
+configuration commonly has this shape:
 
 ```json
 {
@@ -44,7 +64,7 @@ runtime attachment. A host configuration commonly has this shape:
 Adapt the outer configuration keys and generic paths to the MCP host. Keep the
 runtime manifest and runtime data outside the source checkout; the executable
 may remain in the bootstrap-created `.venv`. A direct runtime root is also
-supported:
+supported for standalone use:
 
 ```text
 /path/to/email-memory/.venv/bin/email-memory-store-mcp --root <runtime-root>
@@ -58,6 +78,10 @@ configuration stays in the local bundle.
 
 Run the installed entry point directly. Do not use `uv run` in a persistent MCP
 registration, because it couples startup to a checkout and environment sync.
+
+Email-memory installation and MCP launchers never restart, reload, signal, or
+otherwise control the MCP host. Use the host's documented reconnect operation
+after changing its registration or activating a new package release.
 
 ## Available tools
 
@@ -73,7 +97,7 @@ than an unsupported answer.
 
 ## Optional LLM providers
 
-Hermes is optional. It is not needed to install the package, build the index,
+For a standalone package installation, Hermes is not needed to build the index,
 start the MCP server, or call `search`. The `ask` tool and LLM-assisted promotion
 commands need one of these separately installed command-line providers:
 
@@ -89,6 +113,20 @@ authentication, model access, and process policy are external to this package
 and should be configured according to the chosen provider's documentation. MCP
 uses only the provider's absolute executable path from `runtime.toml`; it never
 falls back to command-name lookup on `PATH`.
+
+The transactional deployment is intentionally stricter than MCP itself. Its
+package-owned maintenance contract requires a configured Hermes executable for
+alert delivery and one selected LLM provider, which may be Hermes, Codex CLI, or
+Claude Code CLI. This is a deployment requirement, not an MCP `search`
+requirement.
+
+### Hermes roles and boundary
+
+Hermes can participate in three independent ways: as an MCP host that calls
+`search` or `ask`, as the optional `hermes-default` LLM provider, and as a
+configured alert transport used by package-owned maintenance. None of those
+roles transfers gateway ownership to this project. Email-memory never starts,
+stops, restarts, reloads, signals, or supervises the Hermes gateway.
 
 ## Startup and failure behavior
 

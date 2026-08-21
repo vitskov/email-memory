@@ -1,5 +1,8 @@
 # Email Memory Store Architecture Overview
 
+[Documentation index](README.md) | [Typical deployment](DEPLOYMENT.md) |
+[Post-install usage](USAGE.md)
+
 ## Purpose
 
 `email-memory-store` is a local-first system for turning email into durable,
@@ -21,6 +24,7 @@ The publishable package contains:
 - data schemas and DuckDB store layer
 - ingestion, extraction, identity, promotion, and retrieval services
 - vector-index adapters and reconciliation logic
+- transactional deployment, MCP-launcher, scheduler, and maintenance mechanisms
 - packaged default promotion assets
 - synthetic tests and generic documentation
 
@@ -140,9 +144,14 @@ release than the coordinator and doctor.
 
 Deployment stages a release-local Python 3.14 environment and wheel under an
 immutable versioned directory. It verifies the schema-v2 manifest, database and
-runtime doctor, real mail authentication, selected LLM, MCP startup, maintenance
-preflight, MCP launcher, and managed scheduler before atomically replacing the
-`current` pointer. A redacted readiness receipt binds those checks to the active
+runtime doctor, real mail authentication, selected LLM, maintenance preflight,
+MCP launcher, and managed scheduler before atomically replacing the `current`
+pointer. Indexed runtimes must also pass live MCP startup. A proven first
+deployment with no indexed data records only the MCP check as deferred and
+activates at `awaiting-index`; MCP itself remains fail-closed until real vectors
+exist. The deployment doctor then reports `ready` only after proving live MCP.
+
+A redacted schema-version-3 readiness receipt binds those checks to the active
 release identity. The receipt lives inside the immutable candidate, so the
 receipt and installed code become authoritative through the same atomic
 `current` update. Transaction failures attempt to restore the prior active

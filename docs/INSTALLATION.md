@@ -1,5 +1,8 @@
 # Installation
 
+[Documentation index](README.md) | [Typical deployment](DEPLOYMENT.md) |
+[Post-install usage](USAGE.md)
+
 ## Installation Contract
 
 The GitHub repository is the source of truth for public code, package metadata,
@@ -53,7 +56,7 @@ Direct runtime requirements are declared in `pyproject.toml`:
 | `textual` | Terminal user interfaces |
 | `chromadb` | Persistent vector collections |
 | `sentence-transformers` | Local embedding models |
-| `torch` | CPU tensor runtime used by embeddings |
+| `torch` | Tensor runtime for the selected CPU, CUDA, or MPS embedding profile |
 | `dateparser` | Date normalization |
 | `mcp` | MCP stdio service protocol |
 
@@ -84,6 +87,9 @@ proves real mail authentication, installs the package-owned MCP and scheduler
 integration, writes a redacted readiness receipt, and atomically updates the
 active `current` pointer. See [Deployment](DEPLOYMENT.md) for the transaction,
 doctor, automatic rollback, weekly alert batching, and lifecycle boundaries.
+An already indexed runtime finishes as `ready`. A true first deployment with no
+indexed data finishes safely as `awaiting-index`; follow the documented first
+maintenance run and require doctor exit `0` before connecting MCP.
 The owner-only source root is part of the execution trust boundary: deployment
 fails closed when the checkout, one of its ancestors, or its contents is
 group/world writable, linked, foreign-owned, or hard-linked.
@@ -142,21 +148,26 @@ For development:
 
 When configuration is missing, `deploy.sh` opens the installed setup interface
 and writes beneath the canonical account home's `.config/email-memory-store`
-directory. To create it separately with a development environment:
+directory. A typical deployed user should continue through
+[Deployment](DEPLOYMENT.md#fresh-deployment); the coordinator selects the
+installed application and the central manifest automatically.
+
+To inspect the deployed runtime directly:
+
+```bash
+email_memory_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+email_memory_cli="$email_memory_home/.local/share/email-memory-store/current/venv/bin/email-memory-store"
+runtime_config="$email_memory_home/.config/email-memory-store/runtime.toml"
+
+"$email_memory_cli" --runtime-config "$runtime_config" runtime-doctor
+"$email_memory_cli" --runtime-config "$runtime_config" status
+```
+
+For a standalone or development environment, create and inspect the bundle
+through the checkout-local entry point instead:
 
 ```bash
 ./.venv/bin/email-memory-store setup-private
-```
-
-The wizard writes configuration under
-`${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/` with a `0700` directory
-and `0600` files. Store only credential references there, never credential
-values. See [Configuration](CONFIGURATION.md) for the schemas and precedence
-rules.
-
-Initialize and inspect the configured runtime:
-
-```bash
 RUNTIME_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/runtime.toml"
 ./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" init-db
 ./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" runtime-doctor
@@ -165,6 +176,12 @@ RUNTIME_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/runtime.tom
 ./.venv/bin/email-memory-store --runtime-config "$RUNTIME_CONFIG" status
 ```
 
+The wizard writes configuration under
+`${XDG_CONFIG_HOME:-$HOME/.config}/email-memory-store/` with a `0700` directory
+and `0600` files. Store only credential references there, never credential
+values. See [Configuration](CONFIGURATION.md) for the schemas and precedence
+rules.
+
 Message ingestion and indexing require the locally selected connector and
 policy. The setup form suggests installed command paths, but runtime operations
 use only the absolute executables recorded in `runtime.toml`; they are
@@ -172,9 +189,18 @@ intentionally not inferred from the checkout or rediscovered from `PATH`.
 
 ## MCP Registration
 
-The recommended deployment installs the stable package-owned launcher and
-verifies it before activation. For a standalone package bootstrap, register the
-installed executable and pass the runtime manifest explicitly:
+The recommended deployment installs a stable package-owned launcher at:
+
+```text
+<account-home>/.local/bin/email_memory_store_mcp_hermes.sh
+```
+
+Register that launcher with the MCP host after the deployment doctor reports
+`ready`. It validates and supplies the central manifest through the child
+environment, so the private manifest path is not placed in process arguments.
+
+For a standalone package bootstrap, register the installed executable and pass
+the runtime manifest explicitly:
 
 ```text
 /absolute/path/to/email-memory/.venv/bin/email-memory-store-mcp
@@ -221,10 +247,11 @@ uv run --locked --extra dev mypy --config-file pyproject.toml src
 ```
 
 `uv sync` restores the baseline locked environment, including its CPU PyTorch
-selection on non-macOS hosts. Always use `bootstrap.sh` to rebuild a deployment
-environment so a selected CUDA overlay is reapplied, verified, and recorded.
-Run installed entry points directly rather than putting `uv run` in a persistent
-MCP registration.
+selection on non-macOS hosts. Use `deploy.sh` to rebuild a transactional release
+so its selected accelerator overlay is reapplied, verified, and recorded. Use
+`bootstrap.sh` only for standalone or development environments. Run installed
+entry points directly rather than putting `uv run` in a persistent MCP
+registration.
 
 ## Build A Wheel
 
@@ -240,7 +267,15 @@ not only the editable checkout, and smoke-test both `email-memory-store` and
 
 ## Troubleshooting
 
-Check the interpreter and dependency graph:
+Check the deployed interpreter and dependency graph:
+
+```bash
+email_memory_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+uv pip check --python \
+  "$email_memory_home/.local/share/email-memory-store/current/venv/bin/python"
+```
+
+For a standalone or development environment:
 
 ```bash
 uv run --locked python --version

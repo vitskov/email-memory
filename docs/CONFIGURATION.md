@@ -1,5 +1,8 @@
 # Local Configuration Bundle
 
+[Documentation index](README.md) | [Typical deployment](DEPLOYMENT.md) |
+[Post-install usage](USAGE.md)
+
 ## Purpose
 
 The installed core and the package-owned deployment operations receive private
@@ -11,9 +14,24 @@ distribution, test fixtures, and public Git history.
 The core owns the bundle format and validates the public runtime contract. It
 does not discover local data or private configuration implicitly.
 
+## What Setup Collects
+
+The setup interface asks for four kinds of local information:
+
+1. durable storage locations for databases, indexes, caches, and reports;
+2. absolute executable paths for the selected mail and LLM capabilities;
+3. references to external credentials and generic alert transport selection;
+4. local account, folder-selection, exclusion, and optional retention policy.
+
+These values describe how one installation attaches to local services and
+state. They are never appropriate public fixtures. Choose the deployed or
+standalone command surface from [Usage](USAGE.md#choose-the-command-surface)
+rather than rediscovering executables through `PATH`.
+
 ## Location and Permissions
 
-Run:
+For standalone setup, run the logical command through the installed application
+entry point:
 
 ```bash
 email-memory-store setup-private
@@ -295,9 +313,11 @@ configuration layer.
 Together, the cron and maintenance profiles resolve the configured account,
 alert reference, absolute Himalaya and Hermes executables, and runtime manifest;
 the hardened installed launcher supplies the release-local operational Python.
-The packaged launcher batches scheduled failure events by ISO week and sends
-them on the selected weekly alert day. A direct/manual maintenance run has no
-batch path and therefore sends operational alerts immediately.
+The package-owned `email-memory-store-deploy nightly` launcher always supplies
+an ISO-week batch path, whether cron or an operator invokes it, and delivers
+failures on the selected weekly alert day. Only direct low-level maintenance
+scripts or application diagnostics outside that launcher lack its batch context;
+they are not the recommended deployed pipeline.
 
 Hermes executable configuration authorizes only the email-memory operations
 implemented by the package, such as `hermes chat` and `hermes send`.

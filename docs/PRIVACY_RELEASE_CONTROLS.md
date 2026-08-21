@@ -1,5 +1,8 @@
 # Privacy Release Controls
 
+[Documentation index](README.md) | [Architecture](ARCHITECTURE_OVERVIEW.md) |
+[Installation and packaging](INSTALLATION.md)
+
 The publication boundary uses two complementary gates. Neither gate is a
 substitute for the other.
 

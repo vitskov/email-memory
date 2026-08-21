@@ -1,5 +1,8 @@
 # Deployment
 
+[Documentation index](README.md) | [Installation](INSTALLATION.md) |
+[Post-install usage](USAGE.md)
+
 ## Scope
 
 The repository includes the supported deployment coordinator, MCP launcher, and
@@ -67,6 +70,39 @@ fact-store module root is supplied, setup derives the exact public adapter
 `email_memory_store.integrations.hermes_fact_store:MemoryStore`. It does not
 accept an arbitrary provider import path.
 
+### First index and readiness
+
+Deployment never hides ingestion, extraction, promotion, or cleanup inside the
+installation transaction. If the selected vector store already contains
+indexed data, the coordinator proves live MCP startup and reports `ready`. If a
+genuinely new installation has no indexed data, it instead activates a
+structurally valid `awaiting-index` release. MCP remains fail-closed, while the
+package-owned scheduler and launcher are installed for the first data run.
+
+The bootstrap output is redacted JSON:
+
+```json
+{"schema_version": 1, "status": "awaiting-index", "paths_redacted": true}
+```
+
+For `awaiting-index`, run the installed maintenance pipeline once, then check
+the complete deployment again:
+
+```bash
+email_memory_home="$(getent passwd "$(id -u)" | cut -d: -f6)"
+email_memory_deploy="$email_memory_home/.local/share/email-memory-store/current/bin/email-memory-store-deploy"
+
+"$email_memory_deploy" nightly
+"$email_memory_deploy" doctor
+```
+
+The first maintenance run can take substantially longer than deployment because
+it performs real mail ingestion, extraction, and indexing. Its failures use the
+same ISO-week alert batch as scheduled maintenance. Do not connect an MCP host
+until `doctor` prints `ready` and exits `0`. If no records are eligible for
+indexing, the deployment remains honestly staged at `awaiting-index`; inspect
+the pipeline and embedding status as described in [Usage](USAGE.md#check-health-and-progress).
+
 ## Transaction And Layout
 
 The coordinator stages a new release beneath:
@@ -95,12 +131,16 @@ Before activation, the coordinator verifies all of the following:
 2. the schema-v2 runtime manifest and owner-only local configuration;
 3. database initialization and redacted capability-aware runtime doctor output;
 4. a real mail connector probe and optional fact-provider readiness;
-5. MCP startup/EOF behavior and nightly-maintenance preflight;
+5. nightly-maintenance preflight and either live MCP startup for an indexed
+   runtime or an explicit deferred MCP state for a truly new empty runtime;
 6. the installed MCP launcher and package-owned managed crontab block.
 
-Only after those checks pass does it write the readiness receipt inside the
-immutable candidate and point `current` at that candidate. The receipt and code
-therefore become active through the same atomic pointer replacement.
+Only after those checks pass does it write the receipt inside the immutable
+candidate and point `current` at that candidate. The receipt and code therefore
+become active through the same atomic pointer replacement. A missing `current`
+link is not enough to qualify for deferred readiness: existing managed cron,
+MCP links, sibling releases, or release receipts prove prior deployment state
+and make an empty-index activation fail closed.
 
 ## Central Runtime Contract
 
@@ -125,28 +165,33 @@ entry point.
 
 Nightly maintenance performs runtime, mail, and LLM preflight before updating
 and embedding data. It writes redacted structured JSONL reports in the private
-runtime and serializes maintenance with a lock. Scheduled failures are queued
-in ISO-week batches and delivered on the configured weekly alert day; delivered
-batches receive `.sent` markers and are pruned under the configured retention
-rules. Manual maintenance invocations do not set a batch file, so their alerts
-remain immediate.
+runtime and serializes maintenance with a lock. The package-owned
+`email-memory-store-deploy nightly` launcher always supplies an ISO-week batch
+path, whether cron or an operator invokes it. Failures are delivered on the
+configured weekly alert day; delivered batches receive `.sent` markers and are
+pruned under the configured retention rules. Only direct low-level maintenance
+scripts or application diagnostics outside that launcher lack its batch context;
+they are not a substitute for the deployed pipeline.
 
 The scheduler may use Hermes for LLM calls and alert delivery, but it never
 manages the Hermes gateway process.
 
 ## Receipt And Doctor
 
-A successful transaction writes an owner-only, redacted receipt inside the
-immutable release. The canonical active receipt is selected through:
+A successful transaction writes an owner-only, redacted schema-version-3
+receipt inside the immutable release. The canonical active receipt is selected
+through:
 
 ```text
 <canonical-user-home>/.local/share/email-memory-store/current/.deployment-readiness.json
 ```
 
-The receipt records a release identity and pass/disabled status for the staged
-release, configuration, databases, runtime doctor, live mail probe, optional
-fact provider, MCP probe, maintenance preflight, MCP launcher, scheduler, and
-activation. It contains no configured paths or private values.
+The receipt records a release identity and pass, disabled, or narrowly bounded
+deferred status for the staged release, configuration, databases, runtime
+doctor, live mail probe, optional fact provider, MCP probe, maintenance
+preflight, MCP launcher, scheduler, and activation. `deferred` is valid only for
+the MCP check of a true first deployment whose aggregate index count is zero.
+It contains no configured paths or private values.
 
 Check the complete deployed surface through the active release with the
 release-local `email-memory-store-deploy doctor` command:
@@ -158,8 +203,15 @@ email_memory_deploy_root="$(getent passwd "$(id -u)" | cut -d: -f6)/.local/share
 
 The doctor revalidates the receipt and release identity, `current`, MCP links,
 the schema-v2 configuration, runtime capabilities, real mail access, optional
-fact provider, and the exact managed cron block. Its JSON output is redacted and
-returns `ready` only when the full deployment contract holds.
+fact provider, exact managed cron block, current index count, and live MCP
+startup when data exists. Its JSON output is redacted and has an automation-safe
+exit contract:
+
+| Exit | Status | Meaning |
+| --- | --- | --- |
+| `0` | `ready` | The complete deployment, including live MCP startup, is ready. |
+| `1` | `not-ready` | A structural, configuration, integration, or readiness check failed. |
+| `2` | `awaiting-index` | The first deployment is structurally valid but has no indexed data yet. |
 
 ## Failure And Rollback
 

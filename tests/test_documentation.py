@@ -9,6 +9,7 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
+MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _local_link_targets(markdown_path: Path) -> list[Path]:
@@ -23,6 +24,39 @@ def _local_link_targets(markdown_path: Path) -> list[Path]:
     return targets
 
 
+def _heading_fragments(markdown_path: Path) -> set[str]:
+    fragments: set[str] = set()
+    occurrences: dict[str, int] = {}
+    for heading in MARKDOWN_HEADING.findall(
+        markdown_path.read_text(encoding="utf-8")
+    ):
+        plain = re.sub(r"`([^`]*)`", r"\1", heading).lower()
+        plain = re.sub(r"[^\w\- ]", "", plain)
+        base = re.sub(r"\s+", "-", plain.strip())
+        occurrence = occurrences.get(base, 0)
+        occurrences[base] = occurrence + 1
+        fragments.add(base if occurrence == 0 else f"{base}-{occurrence}")
+    return fragments
+
+
+def _local_fragment_references(markdown_path: Path) -> list[tuple[Path, str]]:
+    references: list[tuple[Path, str]] = []
+    for raw_target in MARKDOWN_LINK.findall(
+        markdown_path.read_text(encoding="utf-8")
+    ):
+        target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+        if target.startswith(("http://", "https://", "mailto:")) or "#" not in target:
+            continue
+        path_text, raw_fragment = target.split("#", 1)
+        target_path = (
+            (markdown_path.parent / unquote(path_text)).resolve()
+            if path_text
+            else markdown_path.resolve()
+        )
+        references.append((target_path, unquote(raw_fragment).lower()))
+    return references
+
+
 def test_local_markdown_links_resolve() -> None:
     markdown_files = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
     broken = [
@@ -35,11 +69,26 @@ def test_local_markdown_links_resolve() -> None:
     assert broken == []
 
 
+def test_local_markdown_fragments_resolve() -> None:
+    markdown_files = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+    broken = [
+        (markdown.relative_to(ROOT), target.relative_to(ROOT), fragment)
+        for markdown in markdown_files
+        for target, fragment in _local_fragment_references(markdown)
+        if target.exists() and fragment not in _heading_fragments(target)
+    ]
+
+    assert broken == []
+
+
 def test_readme_routes_each_audience_to_the_detailed_guides() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     required_targets = {
+        "docs/README.md",
         "docs/INSTALLATION.md",
+        "docs/DEPLOYMENT.md",
         "docs/CONFIGURATION.md",
+        "docs/USAGE.md",
         "docs/MCP_INTEGRATION.md",
         "docs/ARCHITECTURE_OVERVIEW.md",
         "docs/PRIVACY_RELEASE_CONTROLS.md",
@@ -49,13 +98,82 @@ def test_readme_routes_each_audience_to_the_detailed_guides() -> None:
     assert required_targets <= set(MARKDOWN_LINK.findall(readme))
 
 
-def test_readme_keeps_hermes_optional() -> None:
+def test_readme_leads_with_the_supported_typical_deployment() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    section = readme.split("## Optional Hermes integration", 1)[1].split("\n## ", 1)[0]
+    quick_start = readme.split("## Quick start: typical Linux deployment", 1)[1]
+    quick_start = quick_start.split("\n## ", 1)[0]
+
+    assert './scripts/deploy.sh --accelerator auto' in quick_start
+    assert 'install -d -m 0700 "$HOME/.local/src"' in quick_start
+    assert "./scripts/bootstrap.sh" not in quick_start
+    assert "./.venv" not in quick_start
+
+
+def test_documentation_index_routes_tasks_and_defines_terms() -> None:
+    index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    required_targets = {
+        "INSTALLATION.md",
+        "DEPLOYMENT.md",
+        "CONFIGURATION.md",
+        "USAGE.md",
+        "MCP_INTEGRATION.md",
+        "ARCHITECTURE_OVERVIEW.md",
+        "PRIVACY_RELEASE_CONTROLS.md",
+    }
+
+    assert "## New User" in index
+    assert "## Operator" in index
+    assert "## Contributor Or Maintainer" in index
+    assert "## Terms" in index
+    assert required_targets <= set(MARKDOWN_LINK.findall(index))
+
+
+def test_detailed_guides_route_back_to_the_documentation_index() -> None:
+    guides = (
+        "INSTALLATION.md",
+        "DEPLOYMENT.md",
+        "CONFIGURATION.md",
+        "USAGE.md",
+        "MCP_INTEGRATION.md",
+        "ARCHITECTURE_OVERVIEW.md",
+        "PRIVACY_RELEASE_CONTROLS.md",
+    )
+
+    for guide in guides:
+        content = (ROOT / "docs" / guide).read_text(encoding="utf-8")
+        assert "README.md" in MARKDOWN_LINK.findall(content)
+
+
+def test_usage_guide_separates_installed_and_checkout_commands() -> None:
+    usage = (ROOT / "docs" / "USAGE.md").read_text(encoding="utf-8")
+    normalized = " ".join(usage.split())
+
+    assert "## Choose The Command Surface" in usage
+    assert "current/venv/bin/email-memory-store" in usage
+    assert "current/bin/email-memory-store-deploy" in usage
+    assert "./.venv/bin/email-memory-store" in usage
+    for command in (
+        "runtime-doctor",
+        "pipeline-status",
+        "embed-status",
+        "search",
+        "ask",
+        "browse",
+        "cleanup-expired",
+    ):
+        assert command in usage
+    assert "email-memory never controls the hermes gateway lifecycle" in normalized.lower()
+
+
+def test_readme_distinguishes_standalone_and_deployment_provider_requirements() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    section = readme.split("## Hermes and LLM integration", 1)[1].split("\n## ", 1)[0]
     normalized_section = " ".join(section.split())
 
-    assert "optional" in normalized_section.lower()
-    assert "not an installation or MCP requirement" in normalized_section
+    assert "standalone package installation" in normalized_section
+    assert "without an LLM" in normalized_section
+    assert "requires a configured Hermes executable" in normalized_section
+    assert "one selected LLM provider" in normalized_section
 
 
 def test_public_guides_exclude_private_deployment_and_obsolete_runbooks() -> None:
@@ -112,6 +230,11 @@ def test_deployment_guide_documents_public_transaction_contract() -> None:
         "current -> envs/<release>",
         "email_memory_store.integrations.hermes_fact_store:MemoryStore",
         "`telegram`, `slack`, or `discord`",
+        "First index and readiness",
+        "`awaiting-index`",
+        "schema-version-3",
+        '"$email_memory_deploy" nightly',
+        "| `2` | `awaiting-index` |",
     }
 
     assert all(fragment in normalized for fragment in required_fragments)
