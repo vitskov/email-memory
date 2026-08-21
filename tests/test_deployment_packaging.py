@@ -87,6 +87,7 @@ def test_provisioner_is_staging_only_and_has_no_current_mutation_path() -> None:
     assert "activated email-memory release" not in source
     assert "staged and verified email-memory release" in source
     assert "--no-activate" in source  # Compatibility no-op for older coordinators.
+    assert '--managed-python-install-dir "$PYTHON_INSTALL_DIR"' in source
 
 
 def test_provisioner_rejects_ambient_uv_and_preserves_current(tmp_path: Path) -> None:
@@ -651,6 +652,7 @@ def test_standalone_bootstrap_scrubs_hostile_uv_python_git_and_shell_config(
         | {
             "UV_BIN": str(trusted_uv),
             "UV_CONFIG_FILE": str(tmp_path / "uv.toml"),
+            "UV_PYTHON_INSTALL_DIR": str(tmp_path / "redirected-python"),
             "UV_PROJECT_ENVIRONMENT": str(tmp_path / "redirected"),
             "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
             "GIT_DIR": str(tmp_path / "git-dir"),
@@ -674,6 +676,7 @@ def test_standalone_bootstrap_scrubs_hostile_uv_python_git_and_shell_config(
     assert child_env["GIT_CONFIG_NOSYSTEM"] == "1"
     hostile_keys = {
         "UV_CONFIG_FILE",
+        "UV_PYTHON_INSTALL_DIR",
         "PYTHONPYCACHEPREFIX",
         "GIT_DIR",
         "BASH_ENV",
@@ -682,6 +685,50 @@ def test_standalone_bootstrap_scrubs_hostile_uv_python_git_and_shell_config(
         "SHELLOPTS",
     } & child_env.keys()
     assert not hostile_keys, hostile_keys
+
+
+def test_standalone_bootstrap_sets_validated_release_local_python_controls(
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    release.mkdir(mode=0o700)
+    environment = release / "venv"
+    python_install_dir = release / "python"
+    captured = tmp_path / "uv-environment"
+    trusted_uv = tmp_path / "trusted-uv"
+    trusted_uv.write_text(
+        f"#!/bin/sh\n/usr/bin/env >'{captured}'\nexit 99\n", encoding="utf-8"
+    )
+    trusted_uv.chmod(0o700)
+
+    completed = subprocess.run(
+        [
+            str(ROOT / "scripts/bootstrap.sh"),
+            "--environment",
+            str(environment),
+            "--managed-python-install-dir",
+            str(python_install_dir),
+        ],
+        env=os.environ
+        | {
+            "UV_BIN": str(trusted_uv),
+            "UV_MANAGED_PYTHON": "0",
+            "UV_PYTHON_INSTALL_DIR": str(tmp_path / "hostile-python"),
+            "UV_LINK_MODE": "hardlink",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    child_env = {
+        line.partition("=")[0]: line.partition("=")[2]
+        for line in captured.read_text(encoding="utf-8").splitlines()
+    }
+    assert child_env["UV_MANAGED_PYTHON"] == "1"
+    assert child_env["UV_PYTHON_INSTALL_DIR"] == str(python_install_dir)
+    assert child_env["UV_LINK_MODE"] == "copy"
 
 
 def test_deployment_tree_has_no_service_or_gateway_lifecycle_commands() -> None:

@@ -231,6 +231,7 @@ export PYTHONNOUSERSITE UV_MANAGED_PYTHON UV_PYTHON_INSTALL_DIR UV_LINK_MODE UV_
 /usr/bin/chmod 700 "$RELEASE_ROOT"
 UV_BIN="$UV_BIN" "${CLEAN_ENV[@]}" /bin/bash -p "$PUBLIC_CHECKOUT/scripts/bootstrap.sh" \
   --environment "$RELEASE_ENV" \
+  --managed-python-install-dir "$PYTHON_INSTALL_DIR" \
   --accelerator "$ACCELERATOR"
 
 # The venv may symlink to its base interpreter, but both must remain inside the

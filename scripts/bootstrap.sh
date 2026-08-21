@@ -32,6 +32,7 @@ ROOT_DIR="$(cd "$(/usr/bin/dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 MODE=runtime
 PROJECT_ENVIRONMENT="$ROOT_DIR/.venv"
 ACCELERATOR=auto
+MANAGED_PYTHON_INSTALL_DIR=""
 
 canonical_home() {
   local uid
@@ -104,6 +105,8 @@ Usage: scripts/bootstrap.sh [--dev] [--environment PATH] [--accelerator MODE]
   --dev               Install the locked developer tools and test dependencies.
   --environment PATH  Place the virtual environment at PATH instead of .venv.
   --accelerator MODE   Select auto, cpu, cuda, or mps (default: auto).
+  --managed-python-install-dir PATH
+                      Keep uv's managed Python in PATH (deployment use only).
 EOF
 }
 
@@ -127,6 +130,14 @@ while (( $# )); do
         exit 2
       fi
       ACCELERATOR=$2
+      shift 2
+      ;;
+    --managed-python-install-dir)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        usage >&2
+        exit 2
+      fi
+      MANAGED_PYTHON_INSTALL_DIR=$2
       shift 2
       ;;
     -h|--help)
@@ -183,6 +194,24 @@ fi
 if ! UV_BIN="$(resolve_trusted_uv)"; then
   echo "a trusted absolute uv executable is required" >&2
   exit 1
+fi
+
+if [[ -n "$MANAGED_PYTHON_INSTALL_DIR" ]]; then
+  expected_python_install_dir="$(/usr/bin/dirname -- "$PROJECT_ENVIRONMENT")/python"
+  managed_python_parent="$(/usr/bin/dirname -- "$MANAGED_PYTHON_INSTALL_DIR")"
+  if [[ "$PROJECT_ENVIRONMENT" != /* \
+    || "$MANAGED_PYTHON_INSTALL_DIR" != /* \
+    || "$MANAGED_PYTHON_INSTALL_DIR" != "$expected_python_install_dir" \
+    || ! -d "$managed_python_parent" \
+    || -L "$managed_python_parent" ]] \
+    || ! path_chain_is_trusted "$managed_python_parent"; then
+    echo "managed Python install directory is not trusted" >&2
+    exit 1
+  fi
+  UV_MANAGED_PYTHON=1
+  UV_PYTHON_INSTALL_DIR=$MANAGED_PYTHON_INSTALL_DIR
+  UV_LINK_MODE=copy
+  export UV_MANAGED_PYTHON UV_PYTHON_INSTALL_DIR UV_LINK_MODE
 fi
 
 cd "$ROOT_DIR"
