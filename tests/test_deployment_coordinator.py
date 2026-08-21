@@ -13,6 +13,7 @@ import pytest
 
 from email_memory_store.deployment.cli import (
     BootstrapError,
+    DEFAULT_PROBE_TIMEOUT_SECONDS,
     MANAGED_END,
     MANAGED_START,
     RECEIPT_CODES,
@@ -23,6 +24,7 @@ from email_memory_store.deployment.cli import (
     _git_environment,
     _managed_crontab,
     _nightly,
+    _parser,
     _read_crontab,
     _run,
     _validate_production_roots,
@@ -31,6 +33,38 @@ from email_memory_store.deployment.cli import (
     _write_receipt,
     main,
 )
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["bootstrap", "--public-checkout", "/trusted/checkout"], "bootstrap"),
+        (["doctor"], "doctor"),
+    ],
+)
+def test_deployment_commands_allow_cold_start_by_default(
+    argv: list[str], command: str
+) -> None:
+    args = _parser().parse_args(argv)
+
+    assert args.command == command
+    assert args.probe_timeout == DEFAULT_PROBE_TIMEOUT_SECONDS == 60
+
+
+@pytest.mark.parametrize("command", ["bootstrap", "doctor"])
+@pytest.mark.parametrize("timeout", ["0", "-1", "not-a-number"])
+def test_deployment_commands_reject_nonpositive_probe_timeout(
+    command: str, timeout: str
+) -> None:
+    argv = [command]
+    if command == "bootstrap":
+        argv.extend(["--public-checkout", "/trusted/checkout"])
+    argv.extend(["--probe-timeout", timeout])
+
+    with pytest.raises(SystemExit) as error:
+        _parser().parse_args(argv)
+
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize(

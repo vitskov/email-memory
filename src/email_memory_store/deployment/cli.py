@@ -41,10 +41,21 @@ _FACT_STORE_PROVIDER_ENV = "EMAIL_MEMORY_STORE_FACT_STORE_PROVIDER"
 _SAFE_CRON_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 _SHELL_INJECTION_VARIABLES = {"BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"}
 _CONNECTOR_CONTROL_PREFIXES = ("HIMALAYA_", "HERMES_")
+DEFAULT_PROBE_TIMEOUT_SECONDS = 60
 
 
 class BootstrapError(RuntimeError):
     """A redaction-safe bootstrap failure."""
+
+
+def _positive_timeout(value: str) -> int:
+    try:
+        timeout = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("probe timeout must be a positive integer") from error
+    if timeout <= 0:
+        raise argparse.ArgumentTypeError("probe timeout must be a positive integer")
+    return timeout
 
 
 def _installed_script(name: str) -> Path:
@@ -1163,7 +1174,11 @@ def _parser() -> argparse.ArgumentParser:
     bootstrap.add_argument(
         "--accelerator", choices=("auto", "cpu", "cuda", "mps"), default="auto"
     )
-    bootstrap.add_argument("--probe-timeout", type=int, default=20)
+    bootstrap.add_argument(
+        "--probe-timeout",
+        type=_positive_timeout,
+        default=DEFAULT_PROBE_TIMEOUT_SECONDS,
+    )
     bootstrap.add_argument("--cron-schedule", default="30 2 * * *")
     bootstrap.add_argument("--crontab-command", default="crontab")
     bootstrap.add_argument("--replace-scheduler-command")
@@ -1181,7 +1196,11 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--deployment-root")
     doctor.add_argument("--cron-schedule", default="30 2 * * *")
     doctor.add_argument("--crontab-command", default="crontab")
-    doctor.add_argument("--probe-timeout", type=int, default=20)
+    doctor.add_argument(
+        "--probe-timeout",
+        type=_positive_timeout,
+        default=DEFAULT_PROBE_TIMEOUT_SECONDS,
+    )
     doctor.set_defaults(handler=_doctor)
     nightly = commands.add_parser("nightly")
     nightly.set_defaults(handler=_nightly)
