@@ -32,14 +32,18 @@ one deployment identity.
 From a clean public clone:
 
 ```bash
-git clone https://github.com/vitskov/email-memory.git
-cd email-memory
+install -d -m 0700 "$HOME/.local/src"
+umask 077
+git clone https://github.com/vitskov/email-memory.git "$HOME/.local/src/email-memory"
+cd "$HOME/.local/src/email-memory"
 uv self update
 ./scripts/deploy.sh --accelerator auto
 ```
 
 `deploy.sh` requires a clean, trusted checkout and a trusted absolute `uv`
-executable. On Linux, `--accelerator auto` chooses CUDA only when a usable
+executable. The owner-only source root and restrictive clone umask are required:
+deployment rejects linked, hard-linked, foreign-owned, or group/world-writable
+checkout paths and ancestors. On Linux, `--accelerator auto` chooses CUDA only when a usable
 NVIDIA device is detected and CPU otherwise. Explicit `cpu` and `cuda` modes
 fail closed when their requirements are not met. The lower-level package
 bootstrap supports MPS on Apple silicon macOS, but the transactional

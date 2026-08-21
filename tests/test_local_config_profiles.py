@@ -139,6 +139,25 @@ def test_shell_exports_are_sorted_and_safely_quoted(
     )
 
 
+def test_ingestion_preserves_present_empty_folder_lists(
+    config_environment: dict[str, str],
+) -> None:
+    paths = local_config.private_setup_paths(environ=config_environment)
+    policy = json.loads(paths.policy.read_text(encoding="utf-8"))
+    policy["include_folders"] = []
+    policy["exclude_folders"] = []
+    paths.policy.write_text(json.dumps(policy, sort_keys=True), encoding="utf-8")
+    paths.policy.chmod(0o600)
+
+    loaded = local_config.load_bundle("ingestion", environ=config_environment)
+
+    assert loaded["INCLUDE_FOLDERS"] == ""
+    assert loaded["EXCLUDE_FOLDERS"] == ""
+    shell = local_config.shell_exports("ingestion", environ=config_environment)
+    assert "export INCLUDE_FOLDERS=''" in shell
+    assert "export EXCLUDE_FOLDERS=''" in shell
+
+
 def test_maintenance_supports_disabled_fact_integration_without_shell_exports(
     config_environment: dict[str, str],
 ) -> None:

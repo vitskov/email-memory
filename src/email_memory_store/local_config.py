@@ -378,9 +378,7 @@ def load_bundle(
         _validate_configured_executable(configured)
 
     optional = _OPTIONAL_PROFILE_EXPORTS.get(profile, frozenset())
-    missing = sorted(
-        name for name in profile_exports - optional if not values.get(name)
-    )
+    missing = sorted(name for name in profile_exports - optional if name not in values)
     if missing:
         raise ValueError(
             f"local configuration profile {profile} is missing required field(s): "

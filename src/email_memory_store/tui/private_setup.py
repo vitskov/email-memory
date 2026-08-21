@@ -129,10 +129,13 @@ def _optional_executable(value: str, *, field: str) -> str | None:
     rendered = _optional_path(value, field=field)
     if rendered is None:
         return None
-    path = Path(rendered)
+    try:
+        path = Path(rendered).resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise ValueError(f"{field} must be a regular executable file") from None
     if not path.is_file() or not os.access(path, os.X_OK):
         raise ValueError(f"{field} must be a regular executable file")
-    return rendered
+    return str(path)
 
 
 def parse_folders(value: str) -> list[str]:

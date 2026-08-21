@@ -71,10 +71,10 @@ def test_write_private_setup_creates_separate_owner_only_artifacts(tmp_path):
             "fact_store_db": "/var/lib/facts/facts.db",
         },
         "executables": {
-            "himalaya": "/bin/true",
-            "hermes": "/bin/true",
-            "codex": "/bin/true",
-            "claude": "/bin/true",
+            "himalaya": str(Path("/bin/true").resolve(strict=True)),
+            "hermes": str(Path("/bin/true").resolve(strict=True)),
+            "codex": str(Path("/bin/true").resolve(strict=True)),
+            "claude": str(Path("/bin/true").resolve(strict=True)),
         },
     }
     assert json.loads(paths.private_env.read_text(encoding="utf-8")) == {
@@ -104,6 +104,21 @@ def test_write_private_setup_requires_explicit_overwrite(tmp_path):
         _values(account_label="replacement"), config_home=tmp_path, overwrite=True
     )
     assert json.loads(paths.policy.read_text(encoding="utf-8"))["account_label"] == "replacement"
+
+
+def test_write_private_setup_persists_strict_executable_target(tmp_path):
+    executable = tmp_path / "real-tool"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    linked = tmp_path / "linked-tool"
+    linked.symlink_to(executable)
+
+    paths = write_private_setup(
+        _values(himalaya_executable=str(linked)), config_home=tmp_path / "config"
+    )
+    manifest = tomllib.loads(paths.runtime_manifest.read_text(encoding="utf-8"))
+
+    assert manifest["executables"]["himalaya"] == str(executable.resolve(strict=True))
 
 
 def test_write_private_setup_supports_validated_local_retention_policy(tmp_path):

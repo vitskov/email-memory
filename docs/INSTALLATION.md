@@ -71,8 +71,10 @@ the `dev` extra and are also locked.
 For a typical runtime installation from a clean public clone:
 
 ```bash
-git clone https://github.com/vitskov/email-memory.git
-cd email-memory
+install -d -m 0700 "$HOME/.local/src"
+umask 077
+git clone https://github.com/vitskov/email-memory.git "$HOME/.local/src/email-memory"
+cd "$HOME/.local/src/email-memory"
 ./scripts/deploy.sh --accelerator auto
 ```
 
@@ -82,6 +84,9 @@ proves real mail authentication, installs the package-owned MCP and scheduler
 integration, writes a redacted readiness receipt, and atomically updates the
 active `current` pointer. See [Deployment](DEPLOYMENT.md) for the transaction,
 doctor, automatic rollback, weekly alert batching, and lifecycle boundaries.
+The owner-only source root is part of the execution trust boundary: deployment
+fails closed when the checkout, one of its ancestors, or its contents is
+group/world writable, linked, foreign-owned, or hard-linked.
 
 For the Linux-only transactional deployment, the default `--accelerator auto`
 mode selects an NVIDIA CUDA build only when `nvidia-smi` confirms a usable GPU

@@ -94,6 +94,8 @@ def test_deployment_guide_documents_public_transaction_contract() -> None:
     normalized = " ".join(deployment.split())
     required_fragments = {
         "./scripts/deploy.sh --accelerator auto",
+        'install -d -m 0700 "$HOME/.local/src"',
+        "umask 077",
         "currently Linux-only",
         "canonical passwd home",
         "rejects ambient `HOME`/XDG root changes and a custom deployment root",
