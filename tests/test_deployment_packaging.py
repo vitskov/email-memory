@@ -35,6 +35,30 @@ def test_public_wheel_owns_hardened_deploy_launcher_and_operational_scripts() ->
     }
 
 
+def test_deployment_coordinator_starts_before_project_dependencies_are_installed() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "email_memory_store.deployment.cli",
+            "--help",
+        ],
+        env={
+            "PATH": "/usr/bin:/bin",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": str(ROOT / "src"),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Deploy from a clean public email-memory Git checkout." in completed.stdout
+    assert "{bootstrap,doctor,nightly}" in completed.stdout
+
+
 def test_operational_scripts_load_configuration_from_the_public_module() -> None:
     for name in ("nightly_cron_launcher.sh", "nightly_maintenance.sh"):
         source = (DEPLOYMENT / "scripts" / name).read_text(encoding="utf-8")
