@@ -28,6 +28,7 @@ RECEIPT_CODES = (
     "mail_connector",
     "fact_provider",
     "mcp_eof",
+    "control_mcp_eof",
     "release_activated",
     "maintenance_preflight",
     "mcp_launcher",
@@ -494,6 +495,8 @@ def _candidate_is_verified(candidate: Path) -> bool:
             candidate / "venv/bin/python",
             candidate / "venv/bin/email-memory-store",
             candidate / "venv/bin/email-memory-store-mcp",
+            candidate / "venv/bin/email-memory-store-control-mcp",
+            candidate / "venv/bin/email-memory-store-hermes-addon",
             candidate / "bin/email-memory-store-deploy",
         )
         for path in (candidate, candidate / "venv", required[0]):
@@ -747,10 +750,14 @@ def _receipt_status(payload: object) -> str | None:
     ):
         return None
     expected_mcp = "pass" if receipt_status == "ready" else "deferred"
-    if statuses["mcp_eof"] != expected_mcp or any(
-        statuses[code] != "pass"
-        for code in RECEIPT_CODES
-        if code not in {"fact_provider", "mcp_eof"}
+    if (
+        statuses["mcp_eof"] != expected_mcp
+        or statuses["control_mcp_eof"] != "pass"
+        or any(
+            statuses[code] != "pass"
+            for code in RECEIPT_CODES
+            if code not in {"fact_provider", "mcp_eof", "control_mcp_eof"}
+        )
     ):
         return None
     return receipt_status
@@ -910,6 +917,7 @@ def _bootstrap(args: argparse.Namespace) -> int:
     python = venv / "bin/python"
     cli = venv / "bin/email-memory-store"
     mcp = venv / "bin/email-memory-store-mcp"
+    control_mcp = venv / "bin/email-memory-store-control-mcp"
     current = active_root / "current"
     nightly = current / "bin/email-memory-store-deploy"
     cron_nightly = _validate_cron_path(nightly, label="nightly scheduler command")
@@ -992,7 +1000,7 @@ def _bootstrap(args: argparse.Namespace) -> int:
         mcp_installer = scripts / "install_email_memory_mcp_launcher.sh"
         if any(
             not path.is_file()
-            for path in (python, cli, mcp, maintenance, mcp_installer)
+            for path in (python, cli, mcp, control_mcp, maintenance, mcp_installer)
         ):
             raise BootstrapError("candidate release is incomplete")
         if args.regenerate_configuration or not _configuration_is_complete(config_home):
@@ -1034,10 +1042,18 @@ def _bootstrap(args: argparse.Namespace) -> int:
             "EMAIL_MEMORY_STORE_ENVIRONMENT": str(venv),
             "EMAIL_MEMORY_STORE_COMMAND": str(cli),
             "EMAIL_MEMORY_STORE_MCP_COMMAND": str(mcp),
+            "EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND": str(control_mcp),
             "EMAIL_MEMORY_OPERATIONAL_PYTHON": str(python),
         }
         _run(["/bin/bash", "-p", maintenance], env=maintenance_env)
         checks["maintenance_preflight"] = "pass"
+        _run(
+            [control_mcp],
+            env=runtime_env,
+            input_bytes=b"",
+            timeout=args.probe_timeout,
+        )
+        checks["control_mcp_eof"] = "pass"
         index_status = _run([cli, "embed-status"], env=runtime_env)
         indexed_documents = _indexed_document_count(index_status.stdout)
         if indexed_documents:
@@ -1234,6 +1250,12 @@ def _doctor(args: argparse.Namespace) -> int:
             live_status = "awaiting-index"
         else:
             raise BootstrapError("active MCP readiness failed")
+        _run(
+            [venv / "bin/email-memory-store-control-mcp"],
+            env=runtime_env,
+            input_bytes=b"",
+            timeout=args.probe_timeout,
+        )
         cron = _read_crontab(_cron_executable(args.crontab_command), env).decode()
         schedule = _validate_schedule(args.cron_schedule)
         nightly = current / "bin/email-memory-store-deploy"

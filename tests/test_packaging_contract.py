@@ -24,6 +24,12 @@ def test_lock_and_console_entry_points_are_committed_contracts() -> None:
     assert project["project"]["scripts"] == {
         "email-memory-store": "email_memory_store.cli:main",
         "email-memory-store-mcp": "email_memory_store.retrieval.mcp_server:main",
+        "email-memory-store-control-mcp": (
+            "email_memory_store.control.mcp_server:main"
+        ),
+        "email-memory-store-hermes-addon": (
+            "email_memory_store.hermes_addon.installer:main"
+        ),
     }
     assert "mcp>=1.0.0,<2" in project["project"]["dependencies"]
 
