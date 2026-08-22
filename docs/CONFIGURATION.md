@@ -16,12 +16,14 @@ does not discover local data or private configuration implicitly.
 
 ## What Setup Collects
 
-The setup interface asks for four kinds of local information:
+The setup interface asks for five kinds of local information:
 
 1. durable storage locations for databases, indexes, caches, and reports;
 2. absolute executable paths for the selected mail and LLM capabilities;
 3. references to external credentials and generic alert transport selection;
 4. local account, folder-selection, exclusion, and optional retention policy.
+5. optional positive numeric identifiers for an owner direct-message chat and
+   its Email Memory Telegram topic.
 
 These values describe how one installation attaches to local services and
 state. They are never appropriate public fixtures. Choose the deployed or
@@ -45,6 +47,7 @@ The setup interface writes the following bundle under
 | `runtime.toml` | Authoritative runtime storage and executable locations. |
 | `private.env.json` | Private deployment references that must not enter the core configuration. |
 | `policy.json` | Local source-selection policy. |
+| `hermes-addon.json` | Optional local source of truth for Telegram owner-chat and topic routing identifiers. Omitted when the add-on is not configured. |
 
 The directory is created and checked as owner-only (`0700`). Each artifact is
 written atomically and checked as owner-only (`0600`). The setup process rejects
@@ -134,6 +137,10 @@ public adapter
 `email_memory_store.integrations.hermes_fact_store:MemoryStore`; arbitrary
 provider import paths are not accepted.
 
+Telegram chat IDs, topic thread IDs, bot tokens, and other routing targets do
+not belong in `private.env.json`. Its schema remains shared by core deployment
+profiles and deliberately has no Telegram menu field.
+
 Normal core runtime resolution does not consume this file. A local-only
 integration may explicitly load it after validating its schema and permissions.
 The public deployment coordinator and packaged scheduler also load it through
@@ -165,6 +172,49 @@ message identifiers as command-line operands; its CLI provides no environment
 or standard-input form for those operands. On a multi-user host where local
 users are mutually untrusted, run email-memory under a dedicated OS account or
 configure the operating system to restrict cross-user process inspection.
+
+## Hermes Add-On Routing
+
+`hermes-addon.json` is an optional, schema-version-1 integration attachment.
+When present, it contains only `schema_version` and a `telegram_menu` object
+whose `chat_id` and `thread_id` are positive ASCII integer strings. The chat
+must be the authorized owner's Telegram direct-message chat with the existing
+Hermes bot, and the thread must identify the pre-created Email Memory topic in
+that chat.
+
+The setup interface writes this attachment only when both values are supplied.
+It rejects partial, zero, negative, nonnumeric, or unexpected values. The file
+uses the same atomic owner-only (`0600`) and no-link checks as the other local
+artifacts. These identifiers are private routing metadata: do not paste them
+into documentation, issue reports, tests, shell history, or a public Git tree.
+The package never stores or requests the Telegram bot token.
+
+On installation, the add-on reads this source attachment and transactionally
+writes the selected DM-topic binding into the existing owner-only Hermes
+configuration. The routing identifiers therefore exist in those two private
+configuration surfaces after activation, but nowhere in the public package,
+shared `private.env.json`, runtime manifest, policy, release, or checkout. The
+bounded configuration writer receives them through standard input, never
+child-process arguments, and the installer does not log or print them.
+
+The add-on serializes only its own install and disable operations. Hermes does
+not provide a shared lock with ordinary `hermes config` writers, so do not run
+another Hermes configuration mutation during either operation. The installer
+uses digest compare-and-swap and conditional rollback: on a detected conflict,
+it preserves a later unrelated configuration edit and leaves control jobs
+disabled for operator review instead of claiming unconditional restoration.
+
+Telegram Topics must first be enabled by the owner in the bot's private chat,
+and the topic must already exist. Email Memory does not create the topic or
+discover its identifiers because those actions require external Telegram
+authority. Obtain both identifiers through the existing authorized
+Telegram/Hermes administration path, then enter them in `setup-private`.
+
+The attachment is consumed only by the explicit
+`email-memory-store-hermes-addon` installer. Core CLI, retrieval, indexing,
+scheduled maintenance, and deployment profiles do not need it. See
+[Hermes Telegram button menu](MCP_INTEGRATION.md#hermes-telegram-button-menu)
+for the complete installation and activation sequence.
 
 ## Local Policy
 
@@ -292,9 +342,12 @@ when a requested capability is unavailable.
 `setup-private` is the supported way to create or regenerate the complete
 bundle. It does not print entered values in ordinary status output. If any
 artifact already exists, the command stops without changing it until the
-overwrite confirmation is explicitly selected. On confirmed regeneration, all
-three documents are rendered from the new local inputs and written with the same
-owner-only permission checks.
+overwrite confirmation is explicitly selected. On confirmed regeneration, the
+three core documents and, when selected, the optional `hermes-addon.json`
+attachment are rendered from the new local inputs and written with the same
+owner-only permission checks. Omitting both Telegram fields during confirmed
+regeneration removes a previous add-on attachment without changing runtime
+databases.
 
 Regeneration does not copy private values into the repository and does not
 modify runtime databases. Back up the bundle with local confidential-data
@@ -310,6 +363,24 @@ Ambient variables cannot override those loaded values. This makes the public
 deployment and scheduling scripts self-contained without a second path/provider
 configuration layer.
 
+The optional Hermes add-on is deliberately outside these shared deployment
+profiles. Its installer reads `hermes-addon.json`, validates the configured
+Hermes executable and stable MCP launcher, and writes only the packaged skill,
+the exact two MCP registrations, and the selected DM-topic binding through
+Hermes's supported configuration interface. It rejects conflicting uses of the
+`email-memory` skill and `email_memory_store_control` registration, as well as
+an unrelated `email_memory_store` retrieval registration. A package-owned core
+retrieval registration may be hardened to the exact add-on policy.
+
+Those MCP registrations belong to the active Hermes profile, not the Telegram
+topic. In the current single-profile design, their allowed tools are available
+to every Hermes-authorized platform session in that profile. The topic binding
+selects the packaged skill and menu UX only. Existing per-platform authorization
+and Hermes tool policy remain authoritative, and the control registration's
+`untrusted` setting preserves Hermes approval for write-capable `job_start`.
+The annotated read-only `system_status` and `job_status` tools may be
+approval-exempt.
+
 Together, the cron and maintenance profiles resolve the configured account,
 alert reference, absolute Himalaya and Hermes executables, and runtime manifest;
 the hardened installed launcher supplies the release-local operational Python.
@@ -323,6 +394,12 @@ Hermes executable configuration authorizes only the email-memory operations
 implemented by the package, such as `hermes chat` and `hermes send`.
 Email-memory never controls the Hermes gateway lifecycle: it never starts,
 stops, restarts, reloads, signals, or supervises that process.
+
+Control-job records created through the optional add-on live under the
+owner-only XDG state root, outside the checkout and release. They contain an
+opaque job ID, one fixed public action name, timestamps, state, and a redacted
+result code. They never persist command output, local paths, account values, or
+credentials.
 
 See [Deployment](DEPLOYMENT.md) for how these profiles participate in staging,
 readiness checks, activation, scheduler installation, and automatic rollback.

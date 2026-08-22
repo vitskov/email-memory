@@ -49,19 +49,33 @@ fi
 # shellcheck source=email_memory_environment.sh
 unset EMAIL_MEMORY_TEST_MODE EMAIL_MEMORY_STORE_ENVIRONMENT \
   EMAIL_MEMORY_STORE_COMMAND EMAIL_MEMORY_STORE_MCP_COMMAND \
+  EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND \
   EMAIL_MEMORY_OPERATIONAL_PYTHON
 source "$ENVIRONMENT_HELPER"
 # The package-owned helper has no connector-specific configuration contract.
 # Repeat the scrub so even a stale helper cannot reintroduce ambient overrides.
 for variable in "${!HIMALAYA_@}"; do unset "$variable"; done
 for variable in "${!HERMES_@}"; do unset "$variable"; done
-MCP_BIN="$EMAIL_MEMORY_STORE_MCP_COMMAND"
+MODE='retrieval'
+if (($#)); then
+  if [[ "$#" == 2 && "$1" == '--mode' && "$2" == 'control' ]]; then
+    MODE='control'
+  else
+    printf '%s\n' 'email-memory MCP launcher arguments are invalid' >&2
+    exit 2
+  fi
+fi
+if [[ "$MODE" == 'control' ]]; then
+  MCP_BIN="$EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND"
+else
+  MCP_BIN="$EMAIL_MEMORY_STORE_MCP_COMMAND"
+fi
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 RUNTIME_CONFIG_DIR="${CONFIG_HOME}/email-memory-store"
 RUNTIME_CONFIG="${RUNTIME_CONFIG_DIR}/runtime.toml"
 
 if [[ ! -x "$MCP_BIN" ]]; then
-  echo "email-memory-store-mcp is not installed in the active isolated environment" >&2
+  echo "the selected email-memory MCP is not installed in the active isolated environment" >&2
   echo "Run provision_email_memory_environment.sh" >&2
   exit 1
 fi

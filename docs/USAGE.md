@@ -15,14 +15,15 @@ in owner-only local storage outside the repository.
 
 ## Choose The Command Surface
 
-Transactional deployment installs two distinct command surfaces:
+Transactional deployment installs three distinct command surfaces:
 
 | Surface | Typical path | Responsibility |
 | --- | --- | --- |
 | Application CLI | `<account-home>/.local/share/email-memory-store/current/venv/bin/email-memory-store` | Status, ingestion, extraction, indexing, retrieval, promotion, and data repair |
 | Deployment control | `<account-home>/.local/share/email-memory-store/current/bin/email-memory-store-deploy` | Readiness doctor and package-owned nightly maintenance |
+| Optional Hermes add-on | `<account-home>/.local/share/email-memory-store/current/venv/bin/email-memory-store-hermes-addon` | One-time installation of the packaged Telegram topic skill and exact MCP bindings |
 
-Both paths resolve through `current`, so they follow the atomically activated
+All installed paths resolve through `current`, so they follow the atomically activated
 release. Do not call a versioned directory beneath `envs/` directly.
 
 A standalone or contributor bootstrap instead creates these checkout-local
@@ -31,6 +32,8 @@ entry points:
 ```text
 ./.venv/bin/email-memory-store
 ./.venv/bin/email-memory-store-mcp
+./.venv/bin/email-memory-store-control-mcp
+./.venv/bin/email-memory-store-hermes-addon
 ```
 
 Those entry points are appropriate for standalone use and development, not for
@@ -181,16 +184,61 @@ checkout-local entry point with an explicit manifest:
     --runtime-config /absolute/path/to/runtime.toml
 ```
 
-The server refuses to start without an explicit initialized attachment. It
-exposes `search` without an LLM and `ask` with a configured optional provider.
-See [MCP Integration](MCP_INTEGRATION.md) for registration, tool schemas,
-provider rules, failure behavior, and troubleshooting.
+The retrieval server refuses to start without an explicit initialized
+attachment. It exposes `search` without an LLM and `ask` with a configured
+optional provider. The separate control mode exposes only redacted status and
+fixed asynchronous operations; it never accepts a command line, executable,
+path, environment value, or arbitrary action. See
+[MCP Integration](MCP_INTEGRATION.md) for registration, tool schemas, provider
+rules, failure behavior, and troubleshooting.
 
 **Email-memory never controls the Hermes gateway lifecycle.** It may invoke
 configured `hermes chat` and `hermes send` commands, but it never starts, stops,
 restarts, reloads, signals, or supervises the gateway. Reconnect MCP through the
 host's documented user-facing operation; gateway lifecycle remains outside this
 project.
+
+## Telegram Button Menu
+
+The optional Hermes add-on routes one pre-created Telegram DM topic to the
+packaged `email-memory` skill. After installation and MCP reload, a confirmed
+`/new` must create the first new topic session so Hermes injects that automatic
+skill. At the new session start, after a completed action, or when the owner
+sends `menu`, Hermes presents Search, Ask, Status, and Operations through its
+built-in `clarify` interface. The four choices render as native numbered inline
+buttons, one per row, with Hermes's additional Other choice. This is
+intentionally a compact surrogate interface, not a Telegram Mini App or a
+custom keyboard implementation.
+
+Search and Ask call only the retrieval server. Status calls the read-only
+`system_status` tool and works when a fresh deployment is honestly staged at
+`awaiting-index`; retrieval still fails closed until the first index is ready.
+Operations offers Update, Retry failures, Reconcile, and Main menu. Each write
+operation requires a second cancel-first confirmation, starts a fixed
+asynchronous job, returns an opaque job ID, and can be checked with
+`job_status`.
+
+The topic is focused session routing and UX, not a capability sandbox or MCP
+scope boundary. In the current single-profile design, both enabled MCP servers
+are available to every Hermes-authorized platform session in that profile, not
+only the Email Memory Telegram topic. Hermes's existing per-platform
+authorization and tool policy therefore remain authoritative. The control
+server is `untrusted`: Hermes approval gates write-capable `job_start`, while
+the annotated read-only `system_status` and `job_status` tools may be
+approval-exempt. Fixed actions, shared maintenance locking, redacted records,
+and the absence of shell or gateway-lifecycle interfaces provide the server-side
+boundary.
+
+Send `menu` after an expired choice only once the new session has loaded the
+skill. It cannot bootstrap the skill into a session that predates installation.
+A started worker survives an ordinary MCP disconnect. A full Hermes service
+restart can terminate the worker; the durable record then becomes
+`worker_interrupted`, and the package never replays the operation automatically.
+Review state before deliberately starting it again.
+
+For prerequisite topic setup, owner-only routing configuration, installer
+commands, the confirmed `/reload-mcp`, and the required confirmed `/new`, follow
+[Hermes Telegram button menu](MCP_INTEGRATION.md#hermes-telegram-button-menu).
 
 ## Promotions
 

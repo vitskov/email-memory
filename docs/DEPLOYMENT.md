@@ -10,6 +10,11 @@ nightly scheduler as package-owned public operations. A typical installation
 starts from a clean public Git clone and keeps the checkout, immutable installed
 releases, local configuration, and durable email state separate.
 
+The release also includes an optional installer for a button-guided Email Memory
+topic in an existing Hermes Telegram bot. It uses supported Hermes configuration
+and skill interfaces; it is not a Hermes core modification and is not activated
+automatically by deployment.
+
 Email-memory never controls the Hermes gateway lifecycle. This is an absolute
 lifecycle boundary: the deployment coordinator never starts, stops, restarts,
 reloads, signals, or supervises that process. Email-memory may invoke configured
@@ -70,14 +75,22 @@ fact-store module root is supplied, setup derives the exact public adapter
 `email_memory_store.integrations.hermes_fact_store:MemoryStore`. It does not
 accept an arbitrary provider import path.
 
+The same setup form can optionally collect the positive owner-DM chat ID and
+Email Memory topic thread ID for the Hermes Telegram add-on. Those identifiers
+are written only to the owner-only `hermes-addon.json` attachment, never to
+`runtime.toml`, `private.env.json`, `policy.json`, a release, or the checkout.
+Leave both fields empty when the add-on is not wanted. Telegram Topics and the
+topic itself must already have been enabled and created by the authorized owner.
+
 ### First index and readiness
 
 Deployment never hides ingestion, extraction, promotion, or cleanup inside the
 installation transaction. If the selected vector store already contains
 indexed data, the coordinator proves live MCP startup and reports `ready`. If a
 genuinely new installation has no indexed data, it instead activates a
-structurally valid `awaiting-index` release. MCP remains fail-closed, while the
-package-owned scheduler and launcher are installed for the first data run.
+structurally valid `awaiting-index` release. Retrieval MCP remains fail-closed,
+while the package-owned scheduler, launcher, and redacted control-status surface
+are available for the first data run.
 
 The bootstrap output is redacted JSON:
 
@@ -98,10 +111,12 @@ email_memory_deploy="$email_memory_home/.local/share/email-memory-store/current/
 
 The first maintenance run can take substantially longer than deployment because
 it performs real mail ingestion, extraction, and indexing. Its failures use the
-same ISO-week alert batch as scheduled maintenance. Do not connect an MCP host
-until `doctor` prints `ready` and exits `0`. If no records are eligible for
+same ISO-week alert batch as scheduled maintenance. Do not register or call the
+retrieval server until `doctor` prints `ready` and exits `0`; the optional
+control server may still report redacted Status. If no records are eligible for
 indexing, the deployment remains honestly staged at `awaiting-index`; inspect
-the pipeline and embedding status as described in [Usage](USAGE.md#check-health-and-progress).
+the pipeline and embedding status as described in
+[Usage](USAGE.md#check-health-and-progress).
 
 ## Transaction And Layout
 
@@ -127,12 +142,15 @@ pointer is updated transactionally.
 
 Before activation, the coordinator verifies all of the following:
 
-1. the release, package entry points, dependency graph, and accelerator receipt;
+1. the release, package entry points, dependency graph, and accelerator receipt,
+   including the retrieval MCP, control MCP, and optional add-on installer
+   entry points;
 2. the schema-v2 runtime manifest and owner-only local configuration;
 3. database initialization and redacted capability-aware runtime doctor output;
 4. a real mail connector probe and optional fact-provider readiness;
-5. nightly-maintenance preflight and either live MCP startup for an indexed
-   runtime or an explicit deferred MCP state for a truly new empty runtime;
+5. nightly-maintenance preflight, control-server stdio startup, and either live
+   retrieval MCP startup for an indexed runtime or an explicit deferred
+   retrieval state for a truly new empty runtime;
 6. the installed MCP launcher and package-owned managed crontab block.
 
 Only after those checks pass does it write the receipt inside the immutable
@@ -176,6 +194,44 @@ they are not a substitute for the deployed pipeline.
 The scheduler may use Hermes for LLM calls and alert delivery, but it never
 manages the Hermes gateway process.
 
+## Optional Hermes Telegram Add-On
+
+Transactional deployment installs the add-on executable and verifies the
+control MCP entry point, but it does not modify Hermes automatically. After the
+core deployment is healthy, the operator explicitly runs the installed
+`email-memory-store-hermes-addon` command. That transaction installs the
+packaged `email-memory` skill, registers the exact retrieval and control MCP
+servers, and binds the configured owner DM topic. Add-on install and disable
+serialize with each other, but ordinary Hermes configuration writers do not
+share that lock. Do not run `hermes config` or any other Hermes configuration
+mutation concurrently with either operation. Digest compare-and-swap and
+conditional rollback preserve a later unrelated edit on a detected conflict;
+control jobs then remain disabled until the conflict is resolved and the
+operation is deliberately retried.
+
+The installer reserves `email-memory`, `email_memory_store`, and
+`email_memory_store_control` for its package-owned skill and registrations. It
+rejects conflicting skill and control content and an unrelated retrieval
+registration. An existing package-owned core retrieval registration may be
+hardened to the add-on's exact trust and tool policy. See the integration guide
+for the complete ownership and conditional-rollback contract.
+
+The topic binding and both MCP registrations are written to the owner-only
+Hermes configuration. In the current single-profile design, enabled MCP tools
+are profile-global and can be called by every Hermes-authorized platform
+session, not only the bound Telegram topic. The topic is guided UX; existing
+Hermes authorization and tool policy provide reach control, while the
+`untrusted` control registration preserves Hermes approval for write-capable
+`job_start`. The annotated read-only status tools may be approval-exempt.
+
+Activation then uses the user-facing `/reload-mcp` command and its configured
+confirmation, followed by a confirmed `/new` in the configured Telegram topic.
+The new session is what injects the topic skill; `menu` is only a later recovery
+command. Email Memory never starts, stops, reloads, restarts, signals, or
+supervises the gateway as part of installation, activation, or recovery. Follow
+the exact prerequisites and commands in
+[Hermes Telegram button menu](MCP_INTEGRATION.md#hermes-telegram-button-menu).
+
 ## Receipt And Doctor
 
 A successful transaction writes an owner-only, redacted schema-version-3
@@ -189,9 +245,11 @@ through:
 The receipt records a release identity and pass, disabled, or narrowly bounded
 deferred status for the staged release, configuration, databases, runtime
 doctor, live mail probe, optional fact provider, MCP probe, maintenance
-preflight, MCP launcher, scheduler, and activation. `deferred` is valid only for
-the MCP check of a true first deployment whose aggregate index count is zero.
-It contains no configured paths or private values.
+preflight, retrieval and control MCP startup, MCP launcher, scheduler, and
+activation. `deferred` is valid only for the retrieval MCP check of a true first
+deployment whose aggregate index count is zero. The control server remains able
+to report the redacted `awaiting-index` state. The receipt contains no
+configured paths or private values.
 
 Check the complete deployed surface through the active release with the
 release-local `email-memory-store-deploy doctor` command:
@@ -226,6 +284,24 @@ revision through the supported interface, check out that revision in a clean
 public clone and run `./scripts/deploy.sh --accelerator auto`; it is staged and
 validated as a new transaction before becoming current. Do not edit `current`,
 MCP symlinks, a release-local receipt, or the managed crontab block independently.
+
+An active Hermes add-on adds one required pre-downgrade sequence when the target
+revision predates add-on/control support. Before checking out or deploying that
+revision:
+
+1. Use the add-on Status action and verify that no control job is active.
+2. Run the current release's `email-memory-store-hermes-addon --disable`.
+3. Send `/reload-mcp` through Hermes and complete its built-in confirmation when
+   enabled.
+4. Only then check out the old revision and run its supported deployment
+   transaction.
+
+This ordering removes the external Hermes control registration and skill while
+the disable executable still exists. Otherwise the old stable launcher cannot
+serve the retained `--mode control` registration. Automatic transaction rollback
+to a previous add-on-capable release is unaffected; both sides of that rollback
+retain the compatible control launcher and disable contract. See
+[Disable](MCP_INTEGRATION.md#disable) for the complete teardown behavior.
 
 ## Upgrade
 

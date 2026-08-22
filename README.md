@@ -23,6 +23,8 @@ policy, and reports remain in an owner-only local runtime outside the checkout.
 - Produces citation-constrained answers when an optional LLM provider is
   configured.
 - Serves the same `search` and `ask` capabilities over MCP.
+- Optionally adds a button-guided Email Memory topic to an existing Hermes
+  Telegram installation without patching Hermes or controlling its gateway.
 - Runs package-owned nightly maintenance with ISO-week alert batching and
   owner-only structured reports.
 
@@ -59,7 +61,8 @@ trust boundaries, or start from the task-oriented
 | --- | --- |
 | Python package, schemas, CLI and MCP entry points | Email content and derived records |
 | Generic deployment and maintenance mechanisms | DuckDB databases, vector indexes, caches, and reports |
-| Synthetic tests and value-free documentation | Runtime manifest, local policy, and credential references |
+| Generic Hermes skill and add-on installer | Telegram owner-chat and topic routing identifiers |
+| Synthetic tests and value-free documentation | Runtime manifest, local policy, credential references, and integration attachments |
 | Privacy gates for tracked files, Git history, and release artifacts | A deployment-specific identifier denylist used before publication |
 
 Cloning or testing the repository does not grant access to local email data.
@@ -67,7 +70,12 @@ Conversely, installing the public code does not place private state in Git: the
 setup interface creates a separate `0700` configuration directory with `0600`
 files, and deployment keeps durable state outside both the checkout and
 installed releases. Credential values belong in their provider's credential
-store; local configuration records references only.
+store; local configuration records references only. Optional Telegram routing
+identifiers originate only from the separate owner-only `hermes-addon.json`
+attachment; they are never part of the shared `private.env.json` schema or
+public examples. Add-on installation transactionally copies the selected topic
+binding into the owner-only Hermes configuration without placing its identifiers
+in child-process arguments or logs.
 
 Read [Privacy Release Controls](docs/PRIVACY_RELEASE_CONTROLS.md) before
 publishing a fork or release.
@@ -139,16 +147,19 @@ indexing, retrieval, maintenance, and recovery after installation.
 ## MCP integration
 
 The transactional deployer installs and verifies a stable package-owned MCP
-launcher. The MCP server requires an explicit initialized runtime attachment and
-fails closed instead of creating or searching an empty default index. It exposes:
+launcher. The retrieval server requires an explicit initialized runtime
+attachment and fails closed instead of creating or searching an empty default
+index. An optional, separately registered control server exposes only fixed,
+redacted operations:
 
-| Tool | Purpose | LLM required |
+| Server | Tools | Purpose |
 | --- | --- | --- |
-| `search` | Hybrid retrieval with date, thread, and effort filters | No |
-| `ask` | A grounded answer whose claims use inline source handles | Yes |
+| Retrieval | `search`, `ask` | Hybrid retrieval and grounded answers with inline source handles |
+| Control | `system_status`, `job_start`, `job_status` | Redacted readiness and bounded asynchronous maintenance jobs |
 
 See [MCP Integration](docs/MCP_INTEGRATION.md) for host-agnostic registration,
-tool behavior, startup guarantees, and troubleshooting.
+tool behavior, startup guarantees, the optional Hermes Telegram button menu,
+and troubleshooting.
 
 ## Hermes and LLM integration
 
@@ -170,6 +181,24 @@ responsible for its gateway process. The [MCP Integration guide's provider
 section](docs/MCP_INTEGRATION.md#optional-llm-providers) documents the supported
 values and model requirements.
 
+The optional Telegram add-on uses Hermes's existing DM-topic routing, skill,
+MCP, and `clarify` interfaces. It presents a compact menu through native inline
+choice buttons and installs no Hermes core patch. Topic routing creates a
+focused session and user experience; it is not a capability sandbox, so the
+existing Telegram authorization and Hermes tool policy remain authoritative.
+In the current single-profile design, both enabled MCP registrations are
+profile-global: every Hermes-authorized platform session in that profile can
+invoke their allowed tools. The control registration is `untrusted`, so Hermes
+approval remains an independent guard for write-capable `job_start`.
+`system_status` and `job_status` are annotated read-only and may be
+approval-exempt. The Telegram topic does not narrow tool reach.
+Add-on install and disable serialize with each other, but they do not share a
+lock with ordinary Hermes configuration writers. Do not run `hermes config` or
+another Hermes configuration mutation concurrently; detected conflicts preserve
+later edits and leave control jobs disabled for review.
+Follow [Hermes Telegram button menu](docs/MCP_INTEGRATION.md#hermes-telegram-button-menu)
+only after the core deployment is healthy.
+
 ## Choose your path
 
 | Guide | Use it for |
@@ -179,7 +208,7 @@ values and model requirements.
 | [Deployment](docs/DEPLOYMENT.md) | Typical Linux installation, immutable releases, readiness checks, scheduling, and rollback |
 | [Configuration](docs/CONFIGURATION.md) | Central paths and executables, local policy, permissions, regeneration, and runtime selection |
 | [Usage](docs/USAGE.md) | Deployed and standalone command surfaces, common workflows, diagnostics, and safe recovery |
-| [MCP Integration](docs/MCP_INTEGRATION.md) | MCP registration, `search` and `ask`, LLM providers, and troubleshooting |
+| [MCP Integration](docs/MCP_INTEGRATION.md) | Retrieval and control MCP, the optional Hermes Telegram button menu, LLM providers, and troubleshooting |
 | [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Components, data flow, persistent state, operational boundaries, and release invariants |
 | [Privacy Release Controls](docs/PRIVACY_RELEASE_CONTROLS.md) | Generic hosted checks and the required local identifier-denylist gate |
 

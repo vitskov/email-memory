@@ -54,6 +54,7 @@ def test_private_setup_paths_use_xdg_config_home():
     assert paths.runtime_manifest.name == "runtime.toml"
     assert paths.private_env.name == "private.env.json"
     assert paths.policy.name == "policy.json"
+    assert paths.hermes_addon.name == "hermes-addon.json"
 
 
 def test_write_private_setup_creates_separate_owner_only_artifacts(tmp_path):
@@ -103,7 +104,10 @@ def test_write_private_setup_requires_explicit_overwrite(tmp_path):
     paths = write_private_setup(
         _values(account_label="replacement"), config_home=tmp_path, overwrite=True
     )
-    assert json.loads(paths.policy.read_text(encoding="utf-8"))["account_label"] == "replacement"
+    assert (
+        json.loads(paths.policy.read_text(encoding="utf-8"))["account_label"]
+        == "replacement"
+    )
 
 
 def test_write_private_setup_persists_strict_executable_target(tmp_path):
@@ -150,6 +154,122 @@ def test_write_private_setup_supports_validated_local_retention_policy(tmp_path)
     assert load_private_setup(config_home=tmp_path).policy["retention"] == retention
 
 
+def test_private_setup_stores_telegram_menu_only_in_addon_attachment(tmp_path):
+    paths = write_private_setup(
+        _values(telegram_chat_id="123456", telegram_thread_id="789"),
+        config_home=tmp_path,
+    )
+
+    private_env = json.loads(paths.private_env.read_text(encoding="utf-8"))
+    hermes_addon = json.loads(paths.hermes_addon.read_text(encoding="utf-8"))
+    assert "telegram_menu" not in private_env
+    assert hermes_addon == {
+        "schema_version": 1,
+        "telegram_menu": {
+            "chat_id": "123456",
+            "thread_id": "789",
+        },
+    }
+    assert _is_owner_only(paths.hermes_addon)
+    assert "telegram_menu" not in tomllib.loads(
+        paths.runtime_manifest.read_text(encoding="utf-8")
+    )
+    assert "telegram_menu" not in json.loads(paths.policy.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("chat_id", "thread_id"),
+    [
+        ("123", ""),
+        ("", "456"),
+        ("private-chat", "456"),
+        ("123", "topic-456"),
+        ("0", "456"),
+        ("123", "0"),
+        ("-123", "456"),
+    ],
+)
+def test_private_setup_rejects_incomplete_or_non_numeric_telegram_menu_without_values(
+    chat_id, thread_id
+):
+    with pytest.raises(ValueError) as captured:
+        validate_private_setup(
+            _values(telegram_chat_id=chat_id, telegram_thread_id=thread_id)
+        )
+
+    assert chat_id not in str(captured.value) or chat_id in {"", "123"}
+    assert thread_id not in str(captured.value) or thread_id in {"", "456"}
+
+
+def test_load_private_setup_rejects_non_string_or_extra_telegram_menu_fields(tmp_path):
+    paths = write_private_setup(
+        _values(telegram_chat_id="123", telegram_thread_id="456"),
+        config_home=tmp_path,
+    )
+    hermes_addon = json.loads(paths.hermes_addon.read_text(encoding="utf-8"))
+    hermes_addon["telegram_menu"] = {
+        "chat_id": 123,
+        "thread_id": "456",
+        "label": "private-label",
+    }
+    paths.hermes_addon.write_text(json.dumps(hermes_addon), encoding="utf-8")
+    paths.hermes_addon.chmod(0o600)
+
+    with pytest.raises(ValueError, match="unsupported key") as captured:
+        load_private_setup(config_home=tmp_path)
+
+    assert "private-label" not in str(captured.value)
+
+
+def test_load_private_setup_rejects_telegram_menu_in_schema_v1_private_env(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+    private_env = json.loads(paths.private_env.read_text(encoding="utf-8"))
+    private_env["telegram_menu"] = {"chat_id": "123", "thread_id": "456"}
+    paths.private_env.write_text(json.dumps(private_env), encoding="utf-8")
+    paths.private_env.chmod(0o600)
+
+    with pytest.raises(ValueError, match="unsupported key"):
+        load_private_setup(config_home=tmp_path)
+
+
+def test_optional_hermes_addon_is_absent_from_required_artifact_set(tmp_path):
+    paths = write_private_setup(_values(), config_home=tmp_path)
+
+    assert not paths.hermes_addon.exists()
+    assert paths.hermes_addon not in paths.artifacts
+    assert all(path.exists() for path in paths.artifacts)
+    assert load_private_setup(config_home=tmp_path).hermes_addon is None
+
+
+def test_write_private_setup_rejects_symlinked_path_ancestry(tmp_path):
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir(mode=0o700)
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises(PermissionError, match="symbolic link"):
+        write_private_setup(_values(), config_home=linked_parent)
+
+
+def test_load_private_setup_rejects_hardlinked_optional_addon(tmp_path):
+    paths = write_private_setup(
+        _values(telegram_chat_id="123", telegram_thread_id="456"),
+        config_home=tmp_path,
+    )
+    extra_link = tmp_path / "addon-link"
+    extra_link.hardlink_to(paths.hermes_addon)
+
+    with pytest.raises(PermissionError, match="single regular file"):
+        load_private_setup(config_home=tmp_path)
+
+    with pytest.raises(PermissionError, match="single regular file"):
+        write_private_setup(
+            _values(telegram_chat_id="123", telegram_thread_id="456"),
+            config_home=tmp_path,
+            overwrite=True,
+        )
+
+
 def test_write_private_setup_supports_all_sender_archive_matchers(tmp_path):
     rules = [
         {
@@ -167,7 +287,10 @@ def test_write_private_setup_supports_all_sender_archive_matchers(tmp_path):
 
     policy = json.loads(paths.policy.read_text(encoding="utf-8"))
     assert policy["retention"]["sender_archive_rules"] == rules
-    assert load_private_setup(config_home=tmp_path).policy["retention"] == policy["retention"]
+    assert (
+        load_private_setup(config_home=tmp_path).policy["retention"]
+        == policy["retention"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -178,27 +301,39 @@ def test_write_private_setup_supports_all_sender_archive_matchers(tmp_path):
         (_values(account_email="not-an-email"), "valid email address"),
         (_values(retention_sender_archive_rules="not JSON"), "valid JSON"),
         (
-            _values(retention_sender_archive_rules='[{"folder":"Archive","unexpected":true}]'),
+            _values(
+                retention_sender_archive_rules='[{"folder":"Archive","unexpected":true}]'
+            ),
             "unsupported key",
         ),
         (
-            _values(retention_sender_archive_rules='[{"folder":"Archive","domains":"example.test"}]'),
+            _values(
+                retention_sender_archive_rules='[{"folder":"Archive","domains":"example.test"}]'
+            ),
             "must be a list of non-empty strings",
         ),
         (
-            _values(retention_sender_archive_rules='[{"folder":"Archive","emails":[],"domains":[]}]'),
+            _values(
+                retention_sender_archive_rules='[{"folder":"Archive","emails":[],"domains":[]}]'
+            ),
             "at least one non-empty matcher array",
         ),
         (
-            _values(retention_sender_archive_rules='[{"emails":["contact@example.test"]}]'),
+            _values(
+                retention_sender_archive_rules='[{"emails":["contact@example.test"]}]'
+            ),
             "must contain folder",
         ),
         (
-            _values(retention_sender_archive_rules='[{"folder":"   ","emails":["contact@example.test"]}]'),
+            _values(
+                retention_sender_archive_rules='[{"folder":"   ","emails":["contact@example.test"]}]'
+            ),
             "must be a non-empty string",
         ),
         (
-            _values(retention_sender_archive_rules='[{"folder":"Archive","domains":["   "]}]'),
+            _values(
+                retention_sender_archive_rules='[{"folder":"Archive","domains":["   "]}]'
+            ),
             "must be a list of non-empty strings",
         ),
         (
@@ -287,13 +422,13 @@ async def test_private_setup_app_starts(tmp_path):
     app = PrivateSetupApp(config_home=tmp_path)
     async with app.run_test():
         assert app.query_one("#runtime-root", Input) is not None
+        assert app.query_one("#telegram-chat-id", Input).password
+        assert app.query_one("#telegram-thread-id", Input).password
         assert not app.query("#fact-store-provider")
 
 
 def test_private_setup_derives_the_public_fact_store_provider(tmp_path):
-    paths = write_private_setup(
-        _values(fact_store_provider=""), config_home=tmp_path
-    )
+    paths = write_private_setup(_values(fact_store_provider=""), config_home=tmp_path)
 
     private_env = json.loads(paths.private_env.read_text(encoding="utf-8"))
     assert private_env["fact_store_provider"] == FACT_STORE_PROVIDER
@@ -302,7 +437,9 @@ def test_private_setup_derives_the_public_fact_store_provider(tmp_path):
 def test_private_setup_rejects_an_arbitrary_fact_store_provider():
     provider = "private_adapter.module:Store"
 
-    with pytest.raises(ValueError, match="fact-store provider is unsupported") as captured:
+    with pytest.raises(
+        ValueError, match="fact-store provider is unsupported"
+    ) as captured:
         validate_private_setup(_values(fact_store_provider=provider))
     assert provider not in str(captured.value)
 
@@ -310,7 +447,9 @@ def test_private_setup_rejects_an_arbitrary_fact_store_provider():
 def test_private_setup_rejects_an_arbitrary_alert_target_without_disclosing_it():
     target = "telegram" + ":" + "private-route"
 
-    with pytest.raises(ValueError, match="alert destination is unsupported") as captured:
+    with pytest.raises(
+        ValueError, match="alert destination is unsupported"
+    ) as captured:
         validate_private_setup(_values(alert_destination=target))
     assert target not in str(captured.value)
 
@@ -338,7 +477,9 @@ async def test_private_setup_prefills_executables_from_path(tmp_path, monkeypatc
 
     app = PrivateSetupApp(config_home=tmp_path)
     async with app.run_test():
-        assert app.query_one("#himalaya-executable", Input).value == candidates["himalaya"]
+        assert (
+            app.query_one("#himalaya-executable", Input).value == candidates["himalaya"]
+        )
         assert app.query_one("#hermes-executable", Input).value == candidates["hermes"]
         assert app.query_one("#codex-executable", Input).value == candidates["codex"]
         assert app.query_one("#claude-executable", Input).value == ""
@@ -354,10 +495,12 @@ def test_private_setup_rejects_a_non_executable_target(tmp_path):
 
 def test_private_setup_rejects_effective_database_path_collisions():
     with pytest.raises(ValueError, match="must be distinct"):
-        validate_private_setup(_values(
-            main_db="/srv/state/../shared.db",
-            entity_db="/srv/shared.db",
-        ))
+        validate_private_setup(
+            _values(
+                main_db="/srv/state/../shared.db",
+                entity_db="/srv/shared.db",
+            )
+        )
 
 
 def test_load_private_setup_rejects_database_path_collisions(tmp_path):
@@ -367,9 +510,11 @@ def test_load_private_setup_rejects_database_path_collisions(tmp_path):
     storage = manifest["storage"]
     executables = manifest["executables"]
     rendered = ["schema_version = 2", "", "[storage]"]
-    rendered.extend(f'{key} = {json.dumps(value)}' for key, value in storage.items())
+    rendered.extend(f"{key} = {json.dumps(value)}" for key, value in storage.items())
     rendered.extend(("", "[executables]"))
-    rendered.extend(f'{key} = {json.dumps(value)}' for key, value in executables.items())
+    rendered.extend(
+        f"{key} = {json.dumps(value)}" for key, value in executables.items()
+    )
     paths.runtime_manifest.write_text("\n".join(rendered) + "\n", encoding="utf-8")
     paths.runtime_manifest.chmod(0o600)
 

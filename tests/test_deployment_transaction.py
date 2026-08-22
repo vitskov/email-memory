@@ -54,6 +54,8 @@ def _fixture_args(tmp_path: Path) -> tuple[argparse.Namespace, Path, Path]:
         "python",
         "email-memory-store",
         "email-memory-store-mcp",
+        "email-memory-store-control-mcp",
+        "email-memory-store-hermes-addon",
     ):
         _executable(venv / "bin" / name)
     _executable(release / "bin/email-memory-store-deploy")
@@ -255,7 +257,12 @@ def test_transaction_persists_one_stable_cron_entry_and_disabled_fact_status(
         for command, environment in zip(
             captured_commands, captured_environments, strict=True
         )
-        if Path(command[0]).name in {"email-memory-store", "email-memory-store-mcp"}
+        if Path(command[0]).name
+        in {
+            "email-memory-store",
+            "email-memory-store-mcp",
+            "email-memory-store-control-mcp",
+        }
     ]
     assert package_runtime_invocations
     for command, environment in package_runtime_invocations:

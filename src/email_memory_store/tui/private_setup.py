@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import tempfile
@@ -28,6 +29,7 @@ CONFIG_DIRECTORY_NAME = "email-memory-store"
 RUNTIME_MANIFEST_NAME = "runtime.toml"
 PRIVATE_ENV_NAME = "private.env.json"
 POLICY_NAME = "policy.json"
+HERMES_ADDON_NAME = "hermes-addon.json"
 PRIVATE_SETUP_SCHEMA_VERSION = 1
 FACT_STORE_PROVIDER = "email_memory_store.integrations.hermes_fact_store:MemoryStore"
 SUPPORTED_ALERT_TARGETS = frozenset({"discord", "slack", "telegram"})
@@ -41,10 +43,16 @@ class PrivateSetupPaths:
     runtime_manifest: Path
     private_env: Path
     policy: Path
+    hermes_addon: Path
 
     @property
     def artifacts(self) -> tuple[Path, Path, Path]:
-        return (self.runtime_manifest, self.private_env, self.policy)
+        """Return the required attachment artifacts."""
+        return (
+            self.runtime_manifest,
+            self.private_env,
+            self.policy,
+        )
 
 
 @dataclass(frozen=True)
@@ -76,6 +84,8 @@ class PrivateSetupValues:
     retention_classification_definitions: str = ""
     alert_destination: str = ""
     credential_reference: str = ""
+    telegram_chat_id: str = ""
+    telegram_thread_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,7 @@ class PrivateSetupBundle:
     runtime: Mapping[str, object]
     private_env: Mapping[str, object]
     policy: Mapping[str, object]
+    hermes_addon: Mapping[str, object] | None = None
 
 
 def private_setup_paths(
@@ -96,7 +107,11 @@ def private_setup_paths(
     env = os.environ if environ is None else environ
     if config_home is None:
         configured_home = env.get("XDG_CONFIG_HOME")
-        base = Path(configured_home).expanduser() if configured_home else Path.home() / ".config"
+        base = (
+            Path(configured_home).expanduser()
+            if configured_home
+            else Path.home() / ".config"
+        )
     else:
         base = Path(config_home).expanduser()
     config_dir = base / CONFIG_DIRECTORY_NAME
@@ -105,6 +120,7 @@ def private_setup_paths(
         runtime_manifest=config_dir / RUNTIME_MANIFEST_NAME,
         private_env=config_dir / PRIVATE_ENV_NAME,
         policy=config_dir / POLICY_NAME,
+        hermes_addon=config_dir / HERMES_ADDON_NAME,
     )
 
 
@@ -125,13 +141,29 @@ def _optional_text(value: str, *, field: str) -> str | None:
     return text or None
 
 
+def _telegram_menu_from_values(
+    values: PrivateSetupValues,
+) -> dict[str, str] | None:
+    chat_id = _optional_text(values.telegram_chat_id, field="Telegram chat ID")
+    thread_id = _optional_text(values.telegram_thread_id, field="Telegram thread ID")
+    if (chat_id is None) != (thread_id is None):
+        raise ValueError("Telegram chat ID and thread ID must be configured together")
+    if chat_id is None:
+        return None
+    if re.fullmatch(r"[1-9][0-9]*", chat_id) is None:
+        raise ValueError("Telegram chat ID must be an ASCII integer string")
+    if re.fullmatch(r"[1-9][0-9]*", thread_id or "") is None:
+        raise ValueError("Telegram thread ID must be an ASCII integer string")
+    return {"chat_id": chat_id, "thread_id": thread_id or ""}
+
+
 def _optional_executable(value: str, *, field: str) -> str | None:
     rendered = _optional_path(value, field=field)
     if rendered is None:
         return None
     try:
         path = Path(rendered).resolve(strict=True)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         raise ValueError(f"{field} must be a regular executable file") from None
     if not path.is_file() or not os.access(path, os.X_OK):
         raise ValueError(f"{field} must be a regular executable file")
@@ -164,11 +196,15 @@ def _retention_from_values(values: PrivateSetupValues) -> dict[str, object] | No
         ("retention_service_folder", "service_folder"),
         ("retention_archive_folder", "archive_folder"),
     ):
-        rendered = _optional_text(getattr(values, values_field), field=policy_key.replace("_", " "))
+        rendered = _optional_text(
+            getattr(values, values_field), field=policy_key.replace("_", " ")
+        )
         if rendered is not None:
             retention[policy_key] = rendered
 
-    rules = _optional_json(values.retention_sender_archive_rules, field="sender archive rules")
+    rules = _optional_json(
+        values.retention_sender_archive_rules, field="sender archive rules"
+    )
     if rules is not None:
         retention["sender_archive_rules"] = rules
     definitions = _optional_json(
@@ -186,14 +222,19 @@ def _effective_runtime_storage(values: PrivateSetupValues) -> dict[str, str]:
     runtime_root = Path(_optional_path(values.runtime_root, field="runtime root") or "")
     storage = {
         "runtime_root": str(runtime_root),
-        "main_db": _optional_path(values.main_db, field="main database") or str(runtime_root / "email_memory.duckdb"),
-        "entity_db": _optional_path(values.entity_db, field="entity database") or str(runtime_root / "entity_memory.duckdb"),
-        "vector_store": _optional_path(values.vector_store, field="vector store") or str(runtime_root / "chroma"),
+        "main_db": _optional_path(values.main_db, field="main database")
+        or str(runtime_root / "email_memory.duckdb"),
+        "entity_db": _optional_path(values.entity_db, field="entity database")
+        or str(runtime_root / "entity_memory.duckdb"),
+        "vector_store": _optional_path(values.vector_store, field="vector store")
+        or str(runtime_root / "chroma"),
     }
     work_db = _optional_path(values.work_db, field="work database")
     if work_db is None:
         work_root = _optional_path(values.work_root, field="work root")
-        work_db = str(Path(work_root) / "email_memory.work.duckdb") if work_root else None
+        work_db = (
+            str(Path(work_root) / "email_memory.work.duckdb") if work_root else None
+        )
     if work_db is not None:
         storage["work_db"] = work_db
     fact_store_db = _optional_path(values.fact_store_db, field="fact-store database")
@@ -223,7 +264,12 @@ def validate_private_setup(values: PrivateSetupValues) -> None:
     if _optional_text(values.account_label, field="account label") is None:
         raise ValueError("account label is required")
     email = _optional_text(values.account_email, field="account email")
-    if email is None or email.count("@") != 1 or email.startswith("@") or email.endswith("@"):
+    if (
+        email is None
+        or email.count("@") != 1
+        or email.startswith("@")
+        or email.endswith("@")
+    ):
         raise ValueError("account email must be a valid email address")
 
     _optional_path(values.work_root, field="work root")
@@ -249,9 +295,7 @@ def validate_private_setup(values: PrivateSetupValues) -> None:
         values.fact_store_provider, field="fact-store provider"
     )
     if fact_store_root is None and fact_store_provider is not None:
-        raise ValueError(
-            "fact-store root and provider must be configured together"
-        )
+        raise ValueError("fact-store root and provider must be configured together")
     if fact_store_provider is not None and fact_store_provider != FACT_STORE_PROVIDER:
         raise ValueError("fact-store provider is unsupported")
     alert_destination = _optional_text(
@@ -263,6 +307,7 @@ def validate_private_setup(values: PrivateSetupValues) -> None:
     ):
         raise ValueError("alert destination is unsupported")
     _optional_text(values.credential_reference, field="credential reference")
+    _telegram_menu_from_values(values)
     parse_folders(values.include_folders)
     parse_folders(values.exclude_folders)
     _retention_from_values(values)
@@ -297,11 +342,32 @@ def render_private_env(values: PrivateSetupValues) -> str:
         rendered = _optional_text(getattr(values, field), field=field.replace("_", " "))
         if rendered is not None:
             payload[field] = rendered
-    module_root = _optional_path(values.fact_store_module_root, field="fact-store module root")
+    module_root = _optional_path(
+        values.fact_store_module_root, field="fact-store module root"
+    )
     if module_root is not None:
         payload["fact_store_module_root"] = module_root
         payload["fact_store_provider"] = FACT_STORE_PROVIDER
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def render_hermes_addon(values: PrivateSetupValues) -> str | None:
+    """Render the optional Hermes attachment outside the shared environment."""
+    validate_private_setup(values)
+    telegram_menu = _telegram_menu_from_values(values)
+    if telegram_menu is None:
+        return None
+    return (
+        json.dumps(
+            {
+                "schema_version": PRIVATE_SETUP_SCHEMA_VERSION,
+                "telegram_menu": telegram_menu,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def render_policy(values: PrivateSetupValues) -> str:
@@ -320,12 +386,40 @@ def render_policy(values: PrivateSetupValues) -> str:
     return json.dumps(policy, indent=2, sort_keys=True) + "\n"
 
 
+def _assert_no_symlink_components(path: Path) -> None:
+    candidate = path.absolute()
+    current = Path(candidate.anchor)
+    for part in candidate.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise PermissionError(
+                "private configuration path cannot contain a symbolic link"
+            )
+
+
 def _assert_owner_only(path: Path, *, directory: bool) -> None:
-    mode = stat.S_IMODE(path.stat().st_mode)
+    _assert_no_symlink_components(path)
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise PermissionError(
+            "private configuration artifact cannot be a symbolic link"
+        )
+    if metadata.st_uid != os.geteuid():
+        raise PermissionError("private configuration artifact has an unsafe owner")
+    if directory:
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise PermissionError("private configuration directory is invalid")
+    elif not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise PermissionError(
+            "private configuration file must be a single regular file"
+        )
+    mode = stat.S_IMODE(metadata.st_mode)
     forbidden = stat.S_IRWXG | stat.S_IRWXO
     if mode & forbidden:
         kind = "directory" if directory else "file"
-        raise PermissionError(f"private {kind} {path} is accessible by group or other users")
+        raise PermissionError(
+            f"private {kind} {path} is accessible by group or other users"
+        )
 
 
 def _require_schema_version(raw: Mapping[str, Any], *, artifact: str) -> None:
@@ -346,9 +440,13 @@ def _require_exact_keys(
     missing = required - keys
     unknown = keys - required - optional
     if missing:
-        raise ValueError(f"{artifact} is missing required key(s): {', '.join(sorted(missing))}")
+        raise ValueError(
+            f"{artifact} is missing required key(s): {', '.join(sorted(missing))}"
+        )
     if unknown:
-        raise ValueError(f"{artifact} contains unsupported key(s): {', '.join(sorted(unknown))}")
+        raise ValueError(
+            f"{artifact} contains unsupported key(s): {', '.join(sorted(unknown))}"
+        )
 
 
 def _validate_string(value: object, *, artifact: str, key: str) -> None:
@@ -361,6 +459,26 @@ def _validate_string_list(value: object, *, artifact: str, key: str) -> None:
         isinstance(item, str) and item.strip() for item in value
     ):
         raise ValueError(f"{artifact}.{key} must be a list of non-empty strings")
+
+
+def _validate_telegram_menu(value: object, *, artifact: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{artifact} must be an object")
+    _require_exact_keys(
+        value,
+        artifact=artifact,
+        required={"chat_id", "thread_id"},
+        optional=set(),
+    )
+    chat_id = value["chat_id"]
+    thread_id = value["thread_id"]
+    if not isinstance(chat_id, str) or re.fullmatch(r"[1-9][0-9]*", chat_id) is None:
+        raise ValueError(f"{artifact}.chat_id must be an ASCII integer string")
+    if (
+        not isinstance(thread_id, str)
+        or re.fullmatch(r"[1-9][0-9]*", thread_id) is None
+    ):
+        raise ValueError(f"{artifact}.thread_id must be an ASCII integer string")
 
 
 def _validate_retention(value: object, *, artifact: str) -> None:
@@ -376,7 +494,9 @@ def _validate_retention(value: object, *, artifact: str) -> None:
     }
     unknown = set(value) - allowed
     if unknown:
-        raise ValueError(f"{artifact} contains unsupported key(s): {', '.join(sorted(unknown))}")
+        raise ValueError(
+            f"{artifact} contains unsupported key(s): {', '.join(sorted(unknown))}"
+        )
     for key in {
         "inbox_folder",
         "department_folder",
@@ -405,7 +525,9 @@ def _validate_retention(value: object, *, artifact: str) -> None:
                 raise ValueError(
                     f"{artifact}.sender_archive_rules entries must contain folder"
                 )
-            _validate_string(rule["folder"], artifact=artifact, key="sender_archive_rules.folder")
+            _validate_string(
+                rule["folder"], artifact=artifact, key="sender_archive_rules.folder"
+            )
             configured_matchers = matcher_keys & set(rule)
             for key in configured_matchers:
                 _validate_string_list(
@@ -487,7 +609,9 @@ def _load_runtime_artifact(path: Path) -> Mapping[str, Any]:
     for key, item in executables.items():
         _validate_string(item, artifact="runtime manifest.executables", key=key)
         if not Path(item).expanduser().is_absolute():
-            raise ValueError(f"runtime manifest.executables.{key} must be an absolute path")
+            raise ValueError(
+                f"runtime manifest.executables.{key} must be an absolute path"
+            )
     return value
 
 
@@ -529,31 +653,63 @@ def load_private_setup(
     _require_exact_keys(
         policy,
         artifact="policy",
-        required={"schema_version", "account_label", "account_email", "include_folders", "exclude_folders"},
+        required={
+            "schema_version",
+            "account_label",
+            "account_email",
+            "include_folders",
+            "exclude_folders",
+        },
         optional={"retention"},
     )
     _validate_string(policy["account_label"], artifact="policy", key="account_label")
     _validate_string(policy["account_email"], artifact="policy", key="account_email")
-    _validate_string_list(policy["include_folders"], artifact="policy", key="include_folders")
-    _validate_string_list(policy["exclude_folders"], artifact="policy", key="exclude_folders")
+    _validate_string_list(
+        policy["include_folders"], artifact="policy", key="include_folders"
+    )
+    _validate_string_list(
+        policy["exclude_folders"], artifact="policy", key="exclude_folders"
+    )
     if "retention" in policy:
         _validate_retention(policy["retention"], artifact="policy.retention")
-    return PrivateSetupBundle(runtime=runtime, private_env=private_env, policy=policy)
+
+    hermes_addon: Mapping[str, object] | None = None
+    if paths.hermes_addon.exists() or paths.hermes_addon.is_symlink():
+        hermes_addon = _load_json_artifact(paths.hermes_addon, artifact="Hermes add-on")
+        _require_schema_version(hermes_addon, artifact="Hermes add-on")
+        _require_exact_keys(
+            hermes_addon,
+            artifact="Hermes add-on",
+            required={"schema_version", "telegram_menu"},
+            optional=set(),
+        )
+        _validate_telegram_menu(
+            hermes_addon["telegram_menu"], artifact="Hermes add-on.telegram_menu"
+        )
+    return PrivateSetupBundle(
+        runtime=runtime,
+        private_env=private_env,
+        policy=policy,
+        hermes_addon=hermes_addon,
+    )
 
 
 def _prepare_private_directory(path: Path) -> None:
-    if path.is_symlink():
-        raise ValueError("private configuration directory cannot be a symbolic link")
+    _assert_no_symlink_components(path)
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not path.is_dir():
-        raise NotADirectoryError(f"private configuration path is not a directory: {path}")
+        raise NotADirectoryError(
+            f"private configuration path is not a directory: {path}"
+        )
     os.chmod(path, 0o700)
     _assert_owner_only(path, directory=True)
 
 
 def _write_owner_only(path: Path, content: str, *, overwrite: bool) -> None:
     """Write a private file atomically with permissions independent of umask."""
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
@@ -567,7 +723,9 @@ def _write_owner_only(path: Path, content: str, *, overwrite: bool) -> None:
             try:
                 os.link(temporary_path, path)
             except FileExistsError:
-                raise FileExistsError(f"private configuration already exists: {path}") from None
+                raise FileExistsError(
+                    f"private configuration already exists: {path}"
+                ) from None
             temporary_path.unlink()
         os.chmod(path, 0o600)
         _assert_owner_only(path, directory=False)
@@ -593,17 +751,37 @@ def write_private_setup(
     paths = private_setup_paths(config_home=config_home, environ=environ)
     _prepare_private_directory(paths.config_dir)
     if not overwrite:
-        existing = [path for path in paths.artifacts if path.exists()]
+        existing = [
+            path
+            for path in (*paths.artifacts, paths.hermes_addon)
+            if path.exists() or path.is_symlink()
+        ]
         if existing:
-            raise FileExistsError("private configuration exists; explicit overwrite is required")
+            raise FileExistsError(
+                "private configuration exists; explicit overwrite is required"
+            )
+    else:
+        for path in (*paths.artifacts, paths.hermes_addon):
+            if path.exists() or path.is_symlink():
+                _assert_owner_only(path, directory=False)
 
     content_by_path = {
         paths.runtime_manifest: render_runtime_manifest(values),
         paths.private_env: render_private_env(values),
         paths.policy: render_policy(values),
     }
+    hermes_addon = render_hermes_addon(values)
+    if hermes_addon is not None:
+        content_by_path[paths.hermes_addon] = hermes_addon
     for path, content in content_by_path.items():
         _write_owner_only(path, content, overwrite=overwrite)
+    if (
+        overwrite
+        and hermes_addon is None
+        and (paths.hermes_addon.exists() or paths.hermes_addon.is_symlink())
+    ):
+        _assert_owner_only(paths.hermes_addon, directory=False)
+        paths.hermes_addon.unlink()
     load_private_setup(config_home=config_home, environ=environ)
     return paths
 
@@ -659,23 +837,37 @@ class PrivateSetupApp(App[None]):
                 id="claude-executable",
             )
             yield Label("Fact-store module root")
-            yield Input(placeholder="Optional absolute local path", id="fact-store-module-root")
+            yield Input(
+                placeholder="Optional absolute local path", id="fact-store-module-root"
+            )
             yield Label("Account label")
             yield Input(placeholder="Required local label", id="account-label")
             yield Label("Account email")
             yield Input(placeholder="Required mailbox address", id="account-email")
             yield Label("Included folders")
-            yield Input(placeholder="Optional comma-separated folders", id="include-folders")
+            yield Input(
+                placeholder="Optional comma-separated folders", id="include-folders"
+            )
             yield Label("Excluded folders")
-            yield Input(placeholder="Optional comma-separated folders", id="exclude-folders")
+            yield Input(
+                placeholder="Optional comma-separated folders", id="exclude-folders"
+            )
             yield Label("Retention inbox folder")
-            yield Input(placeholder="Optional local folder", id="retention-inbox-folder")
+            yield Input(
+                placeholder="Optional local folder", id="retention-inbox-folder"
+            )
             yield Label("Retention department folder")
-            yield Input(placeholder="Optional local folder", id="retention-department-folder")
+            yield Input(
+                placeholder="Optional local folder", id="retention-department-folder"
+            )
             yield Label("Retention service folder")
-            yield Input(placeholder="Optional local folder", id="retention-service-folder")
+            yield Input(
+                placeholder="Optional local folder", id="retention-service-folder"
+            )
             yield Label("Retention archive folder")
-            yield Input(placeholder="Optional local folder", id="retention-archive-folder")
+            yield Input(
+                placeholder="Optional local folder", id="retention-archive-folder"
+            )
             yield Label("Sender archive rules JSON")
             yield Input(
                 placeholder='Optional [{"folder":"...","emails":["..."]}]',
@@ -694,9 +886,30 @@ class PrivateSetupApp(App[None]):
                 id="alert-destination",
             )
             yield Label("Credential reference")
-            yield Input(placeholder="Optional local reference", password=True, id="credential-reference")
-            yield Checkbox("I confirm replacement of any existing local configuration", id="confirm-overwrite")
-            yield Button("Write local configuration", id="write-private-setup", variant="primary")
+            yield Input(
+                placeholder="Optional local reference",
+                password=True,
+                id="credential-reference",
+            )
+            yield Label("Telegram menu chat ID")
+            yield Input(
+                placeholder="Optional; configure with thread ID",
+                password=True,
+                id="telegram-chat-id",
+            )
+            yield Label("Telegram menu thread ID")
+            yield Input(
+                placeholder="Optional; configure with chat ID",
+                password=True,
+                id="telegram-thread-id",
+            )
+            yield Checkbox(
+                "I confirm replacement of any existing local configuration",
+                id="confirm-overwrite",
+            )
+            yield Button(
+                "Write local configuration", id="write-private-setup", variant="primary"
+            )
             yield Static("", id="setup-status")
         yield Footer()
 
@@ -726,9 +939,13 @@ class PrivateSetupApp(App[None]):
             retention_service_folder=value("retention-service-folder"),
             retention_archive_folder=value("retention-archive-folder"),
             retention_sender_archive_rules=value("retention-sender-archive-rules"),
-            retention_classification_definitions=value("retention-classification-definitions"),
+            retention_classification_definitions=value(
+                "retention-classification-definitions"
+            ),
             alert_destination=value("alert-destination"),
             credential_reference=value("credential-reference"),
+            telegram_chat_id=value("telegram-chat-id"),
+            telegram_thread_id=value("telegram-thread-id"),
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -743,9 +960,13 @@ class PrivateSetupApp(App[None]):
                 overwrite=confirmed,
             )
         except FileExistsError:
-            status.update("Existing local configuration needs the confirmation checkbox before replacement.")
-        except (OSError, ValueError):
-            status.update("Configuration was not written. Review the local values and permissions.")
+            status.update(
+                "Existing local configuration needs the confirmation checkbox before replacement."
+            )
+        except OSError, ValueError:
+            status.update(
+                "Configuration was not written. Review the local values and permissions."
+            )
         else:
             status.update("Local configuration written with owner-only permissions.")
 

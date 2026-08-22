@@ -41,6 +41,8 @@ dev = [
 [project.scripts]
 email-memory-store = "email_memory_store.cli:main"
 email-memory-store-mcp = "email_memory_store.retrieval.mcp_server:main"
+email-memory-store-control-mcp = "email_memory_store.control.mcp_server:main"
+email-memory-store-hermes-addon = "email_memory_store.hermes_addon.installer:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

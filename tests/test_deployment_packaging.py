@@ -35,7 +35,9 @@ def test_public_wheel_owns_hardened_deploy_launcher_and_operational_scripts() ->
     }
 
 
-def test_deployment_coordinator_starts_before_project_dependencies_are_installed() -> None:
+def test_deployment_coordinator_starts_before_project_dependencies_are_installed() -> (
+    None
+):
     completed = subprocess.run(
         [
             sys.executable,
@@ -356,7 +358,12 @@ def test_production_environment_helper_ignores_hostile_home_and_xdg(
         directory.mkdir(parents=True, exist_ok=True)
         directory.chmod(0o700)
     (hostile_data / "email-memory-store/current").symlink_to(release)
-    for name in ("python", "email-memory-store", "email-memory-store-mcp"):
+    for name in (
+        "python",
+        "email-memory-store",
+        "email-memory-store-mcp",
+        "email-memory-store-control-mcp",
+    ):
         executable = release / "venv/bin" / name
         executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         executable.chmod(0o700)
@@ -502,8 +509,10 @@ def test_runtime_launcher_children_receive_clean_environment(
         )
         helper_source = (
             f"EMAIL_MEMORY_STORE_MCP_COMMAND='{child}'\n"
+            f"EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND='{child}'\n"
             f"XDG_CONFIG_HOME='{tmp_path / 'config'}'\n"
-            "export EMAIL_MEMORY_STORE_MCP_COMMAND XDG_CONFIG_HOME\n"
+            "export EMAIL_MEMORY_STORE_MCP_COMMAND "
+            "EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND XDG_CONFIG_HOME\n"
         )
     else:
         child.write_text(
@@ -568,9 +577,7 @@ def test_runtime_launcher_children_receive_clean_environment(
     if name == "email_memory_store_mcp_launcher.sh":
         assert captured_args.read_text(encoding="utf-8") == "\n"
         child_environment = captured.read_text(encoding="utf-8")
-        assert (
-            f"EMAIL_MEMORY_STORE_RUNTIME_CONFIG={runtime}\n" in child_environment
-        )
+        assert f"EMAIL_MEMORY_STORE_RUNTIME_CONFIG={runtime}\n" in child_environment
         assert str(runtime) not in captured_args.read_text(encoding="utf-8")
 
 
@@ -642,6 +649,52 @@ def test_standalone_bootstrap_rejects_relative_uv_and_hostile_path(
     assert completed.returncode == 1
     assert "trusted absolute uv executable" in completed.stderr
     assert not marker.exists()
+
+
+def test_mcp_launcher_routes_only_the_explicit_control_mode(tmp_path: Path) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir(mode=0o700)
+    launcher = scripts / "email_memory_store_mcp_launcher.sh"
+    shutil.copyfile(DEPLOYMENT / "scripts" / launcher.name, launcher)
+    launcher.chmod(0o700)
+    selected = tmp_path / "selected"
+    retrieval = tmp_path / "retrieval"
+    control = tmp_path / "control"
+    for executable, label in ((retrieval, "retrieval"), (control, "control")):
+        executable.write_text(
+            f"#!/bin/sh\nprintf '%s' '{label}' >'{selected}'\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+    config = tmp_path / "config/email-memory-store"
+    config.mkdir(parents=True, mode=0o700)
+    runtime = config / "runtime.toml"
+    runtime.write_text("synthetic\n", encoding="utf-8")
+    runtime.chmod(0o600)
+    helper = scripts / "email_memory_environment.sh"
+    helper.write_text(
+        f"EMAIL_MEMORY_STORE_MCP_COMMAND='{retrieval}'\n"
+        f"EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND='{control}'\n"
+        f"XDG_CONFIG_HOME='{tmp_path / 'config'}'\n"
+        "export EMAIL_MEMORY_STORE_MCP_COMMAND "
+        "EMAIL_MEMORY_STORE_CONTROL_MCP_COMMAND XDG_CONFIG_HOME\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o600)
+
+    default = subprocess.run([str(launcher)], check=False)
+    assert default.returncode == 0
+    assert selected.read_text(encoding="utf-8") == "retrieval"
+
+    selected.unlink()
+    chosen = subprocess.run([str(launcher), "--mode", "control"], check=False)
+    assert chosen.returncode == 0
+    assert selected.read_text(encoding="utf-8") == "control"
+
+    selected.unlink()
+    invalid = subprocess.run([str(launcher), "--mode", "retrieval"], check=False)
+    assert invalid.returncode == 2
+    assert not selected.exists()
 
 
 @pytest.mark.parametrize("kind", ["symlink", "hardlink", "writable"])
@@ -780,6 +833,8 @@ def test_deployment_tree_has_no_service_or_gateway_lifecycle_commands() -> None:
         ROOT / "scripts/deploy.sh",
         ROOT / "scripts/provision_email_memory_environment.sh",
         *sorted((DEPLOYMENT / "scripts").rglob("*.sh")),
+        *sorted((ROOT / "src/email_memory_store/control").rglob("*.py")),
+        *sorted((ROOT / "src/email_memory_store/hermes_addon").rglob("*.py")),
     ]
     forbidden = re.compile(
         r"(?m)(?:^|[;&|]\s*)(?:/[^\s]+/)?"

@@ -24,7 +24,10 @@ The publishable package contains:
 - data schemas and DuckDB store layer
 - ingestion, extraction, identity, promotion, and retrieval services
 - vector-index adapters and reconciliation logic
-- transactional deployment, MCP-launcher, scheduler, and maintenance mechanisms
+- transactional deployment, retrieval and control MCP launchers, scheduler, and
+  maintenance mechanisms
+- an optional generic Hermes Telegram skill and transactional configuration
+  installer
 - packaged default promotion assets
 - synthetic tests and generic documentation
 
@@ -47,6 +50,11 @@ connection policy, scheduling notification references, and optional fact-store
 integration. Private values remain outside the runtime-manifest schema and the
 checkout, while validated package profiles expose only the bounded fields needed
 by deployment and scheduled operations.
+
+An optional fourth attachment, `hermes-addon.json`, contains only the positive
+owner-DM chat and topic identifiers used by the Hermes Telegram add-on. It is
+owner-only local state, separate from the shared schema-version-1
+`private.env.json`, and is never copied into a release or public artifact.
 
 ### Runtime resolution
 
@@ -109,6 +117,9 @@ These paths are runtime data and must be excluded from a public source archive.
 7. Maintenance commands repair durable state, retry incomplete processing,
    reconcile indexes, and remove eligible expired records through explicit
    operations.
+8. When explicitly installed, the Hermes Telegram add-on routes one owner DM
+   topic to a button-guided skill. Retrieval calls the existing query server;
+   confirmed writes start bounded jobs through the separate control server.
 
 ## Core Services
 
@@ -119,6 +130,8 @@ These paths are runtime data and must be excluded from a public source archive.
 | `extraction/service.py` | Structured extraction from stored messages. |
 | `entity_store.py` | Person identity resolution and message-to-entity links. |
 | `retrieval/` | Embeddings, vector persistence, hybrid retrieval, grounded answers, and MCP entry point. |
+| `control/` | Redacted status plus durable, asynchronous execution of three fixed, locked maintenance actions. |
+| `hermes_addon/` | Generic skill content and transactional installation into an existing Hermes DM-topic configuration. |
 | `promotion/` | Candidate selection, local policy assets, LLM planning, and writeback lifecycle. |
 | `runtime.py` | Resolution of the explicit local runtime attachment. |
 | `cli.py` | User-facing command parsing and service orchestration. |
@@ -179,6 +192,76 @@ Full reconciliation compares every supported vector collection with its durable
 source rows, while incremental indexing can make newly created records
 searchable sooner. Cursor state distinguishes completed work from actionable
 continuations without turning ordinary bounded scans into false failures.
+
+## Hermes Telegram Add-On Boundary
+
+The optional add-on uses only public package code and existing Hermes extension
+surfaces:
+
+```text
+authorized owner DM topic
+          |
+          v
+Hermes DM-topic routing -> packaged email-memory skill -> built-in clarify
+                                      |                         |
+                         +------------+------------+            v
+                         |                         |       inline choices
+                         v                         v
+                retrieval MCP               control MCP
+                 search / ask       status / fixed async jobs
+                         |                         |
+                         +------------+------------+
+                                      v
+                       centralized local runtime attachment
+```
+
+The retrieval server remains responsible only for `search` and `ask`, and
+fails closed until a real index exists. The control server is a separate
+`untrusted` Hermes registration with the exact `system_status`, `job_start`, and
+`job_status` allowlist. It can report a fresh `awaiting-index` deployment
+without making retrieval appear ready.
+
+Control jobs accept only `maintenance`, `retry_failed_bodies`, or `reconcile`.
+They use owner-only atomic records, serialize writes with the package-owned
+maintenance lock, discard child output, and never accept a command, executable,
+path, environment override, or gateway action. An ordinary MCP disconnect does
+not cancel the detached worker. If a complete Hermes service restart terminates
+it, status records `worker_interrupted`; no operation is replayed
+automatically.
+
+The `email-memory` skill presents a maximum of four configured choices through
+Hermes's built-in `clarify` tool, which adds Other and renders native numbered
+inline buttons one per row. The skill adds an explicit cancel-first confirmation
+before a mutation. Those properties make the topic a predictable focused
+interface, but not a capability sandbox or MCP scope boundary. In the current
+single-profile design, both enabled MCP registrations are available to every
+Hermes-authorized platform session in that profile. Retrieval uses the exact
+full-trust `search`/`ask` allowlist; control uses its exact `untrusted` allowlist,
+so Hermes approval remains an independent guard for write-capable `job_start`.
+The `readOnlyHint=true` status tools may be approval-exempt. Per-platform
+authorization, tool policy, and any stronger isolation remain Hermes
+responsibilities.
+
+The installer reads routing IDs from owner-only `hermes-addon.json`, then
+transactionally writes their topic binding into the owner-only Hermes
+configuration together with the packaged skill and exact MCP registrations. It
+passes private values to its bounded writer through standard input, never
+process arguments or logs. Package locks serialize add-on install and disable
+with each other, but no shared lock coordinates ordinary Hermes configuration
+writers. Do not run another Hermes configuration mutation during either
+operation. Digest compare-and-swap and conditional rollback avoid
+overwriting a later unrelated edit; a detected conflict leaves control jobs
+disabled for review instead of promising unconditional restoration.
+
+The installer rejects conflicting uses of the package-owned `email-memory`
+skill and `email_memory_store_control` registration, and rejects an unrelated
+`email_memory_store` registration. A package-owned core retrieval registration
+may be hardened to its exact policy. The installer contains no token and has no
+gateway-lifecycle interface. Activation is an explicit owner
+`/reload-mcp` with its configured confirmation, followed by a confirmed `/new`
+in the pre-created topic. Hermes injects the topic skill only when it creates
+that new session; `menu` is recovery after skill load, not an activation
+command. None of these steps is a gateway restart performed by this package.
 
 ## Public Release Invariants
 

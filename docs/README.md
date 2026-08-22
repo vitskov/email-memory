@@ -18,6 +18,9 @@ any particular machine, mailbox, or private deployment.
    indexing, retrieval, MCP, promotion previews, and recovery commands.
 5. If an assistant will query the store, finish with
    [MCP Integration](MCP_INTEGRATION.md).
+6. To add a focused Telegram interface to an existing Hermes installation,
+   follow [Hermes Telegram button menu](MCP_INTEGRATION.md#hermes-telegram-button-menu)
+   after core deployment and indexing are healthy.
 
 ## Operator
 
@@ -29,7 +32,8 @@ any particular machine, mailbox, or private deployment.
 - [Configuration](CONFIGURATION.md) defines the central runtime manifest,
   owner-only local bundle, regeneration procedure, and operational artifacts.
 - [MCP Integration](MCP_INTEGRATION.md) covers attachment validation, tool
-  behavior, provider requirements, and startup troubleshooting.
+  behavior, provider requirements, startup troubleshooting, and the optional
+  Hermes Telegram topic add-on.
 
 Email Memory Store may invoke configured Hermes commands, but it never starts,
 stops, restarts, reloads, signals, or supervises the Hermes gateway. Gateway
@@ -59,4 +63,7 @@ lifecycle remains the responsibility of the Hermes host.
 | `current` | The atomic pointer to the active deployed release. Persistent launchers resolve through it instead of naming a versioned release directly. |
 | Deployment control | The packaged `email-memory-store-deploy` launcher used for readiness checks and package-owned maintenance. It is distinct from the application CLI. |
 | MCP attachment | The explicit initialized runtime selected when the MCP server starts. MCP has no implicit empty-runtime fallback. |
+| Control MCP | A separate redacted server with only `system_status`, `job_start`, and `job_status`; it cannot accept commands, paths, or arbitrary arguments. |
+| Hermes Telegram add-on | An optional packaged skill and DM-topic configuration for an existing generic Hermes installation. It is focused UX, not a Hermes core patch, capability sandbox, or MCP scope boundary. |
+| Hermes add-on attachment | The optional owner-only `hermes-addon.json` file containing the local Telegram owner-DM chat and topic identifiers. It is separate from `private.env.json`. |
 | Promotion | Auditable selection or processing of derived records for an optional separately configured downstream fact store. |
