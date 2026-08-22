@@ -739,3 +739,13 @@ def test_cli_git_history_detects_local_identifier_after_binary_prefix(
     assert result.returncode == 1
     assert "local-denylist-identifier" in result.stderr
     assert private_identifier not in result.stderr
+
+
+def test_privacy_workflow_scans_pr_head_instead_of_synthetic_merge() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+    assert (
+        "repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}"
+        in workflow
+    )
+    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow

@@ -24,6 +24,12 @@ runs with read-only repository permissions. It must not contain a list of real
 people, accounts, hosts, destinations, addresses, or deployment paths; placing
 such values in workflow configuration would itself publish them.
 
+For pull requests, the privacy job checks out the contributor's actual head
+repository and commit rather than GitHub's synthetic merge commit. The other CI
+jobs still exercise the merge result. This prevents GitHub-owned merge metadata
+from being mistaken for project history while preserving the publishable-history
+gate.
+
 For Git-backed scans, the gate validates and invokes the absolute system Git
 binary rather than resolving `git` through `PATH`. It runs Git with a minimal
 fixed environment, ignores inherited `GIT_*` settings, disables system and
